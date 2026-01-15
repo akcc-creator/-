@@ -24,11 +24,12 @@ export default async function handler(request) {
 
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     
-    // Using gemini-2.5-flash for best speed/latency balance in a game loop
+    // FIXED: Must use 'gemini-2.5-flash-image' for image generation.
+    // 'gemini-2.5-flash' only returns text.
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-2.5-flash-image',
       contents: {
-        parts: [{ text: prompt + ". Generate a photorealistic image, high quality, vivid colors, 16:9 aspect ratio." }],
+        parts: [{ text: prompt + ". Photorealistic, high quality, vivid colors, 16:9 aspect ratio." }],
       },
       config: {
         imageConfig: {
@@ -51,7 +52,10 @@ export default async function handler(request) {
     }
 
     if (!imageBase64) {
-      throw new Error('No image data found in response');
+      // Log the text response if debugging is needed
+      const text = response.candidates?.[0]?.content?.parts?.[0]?.text;
+      console.warn("Model returned text instead of image:", text);
+      throw new Error('Model did not return an image.');
     }
 
     return new Response(JSON.stringify({ image: imageBase64 }), {

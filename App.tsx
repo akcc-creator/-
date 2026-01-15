@@ -36,6 +36,8 @@ const App: React.FC = () => {
       setCustomBgUrl(result);
       setProgress(0);
       setGameState(GameState.PLAYING);
+    } else {
+      alert("抱歉，連線不穩或生成失敗，請再試一次！");
     }
     setIsGenerating(false);
   };
@@ -54,6 +56,8 @@ const App: React.FC = () => {
           setCustomBgUrl(result);
           setProgress(0);
           setGameState(GameState.PLAYING);
+      } else {
+        alert("抱歉，連線不穩或生成失敗，請再試一次！");
       }
       setIsGenerating(false);
   };
