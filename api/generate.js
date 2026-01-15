@@ -1,8 +1,11 @@
 import { GoogleGenAI } from '@google/genai';
 
-// Switch to Node.js runtime (remove 'edge' config) for better stability with the SDK
+export const config = {
+    runtime: 'nodejs', // Force Node.js runtime for stability
+    maxDuration: 30,   // Allow up to 30 seconds for generation
+};
+
 export default async function handler(request, response) {
-  // Handle CORS if needed, though usually same-origin in Vercel
   if (request.method !== 'POST') {
     return response.status(405).json({ error: 'Method Not Allowed' });
   }
@@ -11,19 +14,18 @@ export default async function handler(request, response) {
     const { prompt } = request.body; 
 
     if (!process.env.API_KEY) {
-      console.error("Server Error: API_KEY is missing in environment variables.");
+      console.error("Server: API_KEY is missing.");
       return response.status(500).json({ error: 'Server configuration error: API Key missing.' });
     }
 
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     
-    console.log("Attempting to generate image with prompt:", prompt);
+    console.log("Server: Generating image...");
 
-    // Using gemini-2.5-flash-image
     const result = await ai.models.generateContent({
       model: 'gemini-2.5-flash-image',
       contents: {
-        parts: [{ text: prompt + ". Photorealistic, high quality, vivid colors, 16:9 aspect ratio." }],
+        parts: [{ text: prompt + ". Photorealistic, 8k resolution, highly detailed, vivid colors, 16:9 aspect ratio, cinematic lighting." }],
       },
       config: {
         imageConfig: {
@@ -32,7 +34,6 @@ export default async function handler(request, response) {
       },
     });
 
-    // Extract the base64 image data
     let imageBase64 = null;
     const parts = result.candidates?.[0]?.content?.parts;
     
@@ -46,16 +47,13 @@ export default async function handler(request, response) {
     }
 
     if (!imageBase64) {
-      const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
-      console.warn("Model returned text instead of image:", text);
-      return response.status(500).json({ error: 'Generation failed: Model returned text instead of image.' });
+      throw new Error("Model returned no image data.");
     }
 
     return response.status(200).json({ image: imageBase64 });
 
   } catch (error) {
-    console.error("API Error Detailed:", error);
-    const errorMessage = error.message || "Unknown server error";
-    return response.status(500).json({ error: errorMessage });
+    console.error("Server API Error:", error);
+    return response.status(500).json({ error: error.message || "Unknown server error" });
   }
 }

@@ -1,67 +1,64 @@
 
 import { GoogleGenAI } from '@google/genai';
 
-// Initialize the client directly on the frontend.
-// Note: In a production public app, you might want to proxy this, but for a demo/rehab tool, 
-// client-side is much more reliable for image generation timeouts.
-const getAIClient = () => {
-  if (!process.env.API_KEY) {
-    console.error("API Key is missing. Please set API_KEY in your .env file.");
-    throw new Error("系統設定錯誤：找不到 API Key，請檢查環境變數。");
+// === HYBRID STRATEGY ===
+// 1. Local Development: Use Client-side SDK directly (requires .env).
+// 2. Production (Vercel): Use /api/generate proxy (bypasses Geo-blocks & protects Key).
+
+const generateClientSide = async (prompt: string): Promise<string | null> => {
+  if (!process.env.API_KEY) throw new Error("Local Dev: API Key missing in .env");
+  
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const response = await ai.models.generateContent({
+    model: 'gemini-2.5-flash-image',
+    contents: {
+      parts: [{ text: prompt + ". Photorealistic, high quality, vivid colors, 16:9 aspect ratio, cinematic lighting." }],
+    },
+    config: {
+      imageConfig: { aspectRatio: "16:9" }
+    },
+  });
+
+  const parts = response.candidates?.[0]?.content?.parts;
+  if (parts) {
+    for (const part of parts) {
+      if (part.inlineData) return `data:image/png;base64,${part.inlineData.data}`;
+    }
   }
-  return new GoogleGenAI({ apiKey: process.env.API_KEY });
+  return null;
+};
+
+const generateServerSide = async (prompt: string): Promise<string | null> => {
+  const response = await fetch('/api/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ prompt }),
+  });
+  
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.error || 'Server generation failed');
+  }
+  return data.image;
 };
 
 export const generateThemeBackground = async (prompt: string): Promise<string | null> => {
   try {
-    const ai = getAIClient();
-    
-    console.log("Generating image with prompt:", prompt);
-
-    // Using gemini-2.5-flash-image for image generation
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: {
-        parts: [{ text: prompt + ". Photorealistic, high quality, vivid colors, 16:9 aspect ratio, cinematic lighting." }],
-      },
-      config: {
-        imageConfig: {
-          aspectRatio: "16:9",
-        }
-      },
-    });
-
-    // Extract the base64 image data
-    let imageBase64 = null;
-    const parts = response.candidates?.[0]?.content?.parts;
-    
-    if (parts) {
-      for (const part of parts) {
-        if (part.inlineData) {
-          imageBase64 = `data:image/png;base64,${part.inlineData.data}`;
-          break;
-        }
-      }
+    // Check if we are in Local Dev AND have a key available
+    if ((import.meta as any).env.DEV && process.env.API_KEY) {
+      console.log("Using Client-side generation (Local Dev)");
+      return await generateClientSide(prompt);
+    } else {
+      console.log("Using Server-side generation (Production)");
+      return await generateServerSide(prompt);
     }
-
-    if (!imageBase64) {
-      console.warn("Model returned text instead of image.", response);
-      return null;
-    }
-
-    return imageBase64;
   } catch (error: any) {
-    console.error("Image generation failed:", error);
-    // Return the error message to be handled by the UI if possible, or null
-    if (error.message.includes("API Key")) {
-        throw error; // Re-throw configuration errors
-    }
-    return null;
+    console.error("Generation Service Failed:", error);
+    throw error;
   }
 };
 
 export const generateRandomBackground = async (): Promise<string | null> => {
-  // Expanded themes for maximum surprise
   const themes = [
     "A cute fluffy cat wearing sunglasses on a beach",
     "A futuristic cyberpunk city with neon lights and flying cars",
