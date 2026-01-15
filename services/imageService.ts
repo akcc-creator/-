@@ -1,9 +1,17 @@
 
 import { GoogleGenAI } from '@google/genai';
+import { BACKGROUNDS } from '../constants';
 
 // === HYBRID STRATEGY ===
-// 1. Local Development: Use Client-side SDK directly (requires .env).
-// 2. Production (Vercel): Use /api/generate proxy (bypasses Geo-blocks & protects Key).
+// 1. Local Development: Use Client-side SDK directly.
+// 2. Production (Vercel): Use /api/generate proxy.
+// 3. Fallback: If API fails (Quota/Net), use local curated list.
+
+const getRandomFallback = () => {
+  const randomIndex = Math.floor(Math.random() * BACKGROUNDS.length);
+  console.log("Using Fallback Image due to API limits");
+  return BACKGROUNDS[randomIndex].url;
+};
 
 const generateClientSide = async (prompt: string): Promise<string | null> => {
   if (!process.env.API_KEY) throw new Error("Local Dev: API Key missing in .env");
@@ -37,6 +45,7 @@ const generateServerSide = async (prompt: string): Promise<string | null> => {
   
   const data = await response.json();
   if (!response.ok) {
+    // Pass the error message up so we can decide to fallback
     throw new Error(data.error || 'Server generation failed');
   }
   return data.image;
@@ -53,8 +62,10 @@ export const generateThemeBackground = async (prompt: string): Promise<string | 
       return await generateServerSide(prompt);
     }
   } catch (error: any) {
-    console.error("Generation Service Failed:", error);
-    throw error;
+    // CRITICAL FIX: Instead of crashing/alerting on 429 or Network Error, 
+    // simply return a high-quality fallback image.
+    console.warn("AI Generation Failed (switching to fallback):", error.message);
+    return getRandomFallback();
   }
 };
 

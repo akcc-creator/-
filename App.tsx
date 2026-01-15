@@ -28,23 +28,25 @@ const App: React.FC = () => {
     }
   }, [gameState]);
 
-  // Wrapper for generation with error handling
+  // Wrapper for generation
   const handleGeneration = async (genFunction: () => Promise<string | null>, successCallback: (url: string) => void) => {
     setIsGenerating(true);
     try {
         const result = await genFunction();
+        // The service now handles 429/errors by returning a fallback URL, so result should always be valid string
         if (result) {
             successCallback(result);
         } else {
-            alert("生成失敗，可能是網路問題或模型繁忙，請再試一次。");
+            // Should theoretically not happen with fallback, but just in case
+            console.error("No result returned");
+            // Fail silently or just pick random local
+            const fallback = BACKGROUNDS[0].url;
+            successCallback(fallback);
         }
     } catch (e: any) {
-        console.error(e);
-        if (e.message && e.message.includes("API Key")) {
-            alert(e.message);
-        } else {
-            alert("發生錯誤：" + (e.message || "未知原因"));
-        }
+        console.error("Critical error in app flow:", e);
+        // Absolute last resort fallback
+        successCallback(BACKGROUNDS[0].url);
     } finally {
         setIsGenerating(false);
     }

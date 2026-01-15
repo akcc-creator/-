@@ -19,7 +19,7 @@ const FOG_OPACITY = 0.98;
 
 const lerp = (start: number, end: number, factor: number) => start + (end - start) * factor;
 
-// Particle System Types
+// Particle System for Foam/Bubbles
 interface Particle {
   x: number;
   y: number;
@@ -27,7 +27,7 @@ interface Particle {
   vy: number;
   life: number;
   size: number;
-  color: string;
+  type: 'foam' | 'sparkle';
 }
 
 const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
@@ -140,19 +140,32 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
     }
   };
 
-  // --- 3. PARTICLE SYSTEM ---
+  // --- 3. ENHANCED PARTICLE SYSTEM (FOAM & SPARKLES) ---
   const spawnParticles = (x: number, y: number) => {
-    const count = 3; // Particles per frame
-    for (let i = 0; i < count; i++) {
+    // 1. Foam (Bubbles) - stay largely in place, shrink
+    for (let i = 0; i < 2; i++) {
       particlesRef.current.push({
-        x: x + (Math.random() - 0.5) * brushSize * 0.5,
-        y: y + (Math.random() - 0.5) * brushSize * 0.5,
-        vx: (Math.random() - 0.5) * 4,
-        vy: (Math.random() - 0.5) * 4,
+        x: x + (Math.random() - 0.5) * brushSize * 0.8,
+        y: y + (Math.random() - 0.5) * brushSize * 0.8,
+        vx: (Math.random() - 0.5) * 0.5,
+        vy: (Math.random() - 0.5) * 0.5,
         life: 1.0,
-        size: Math.random() * 4 + 2,
-        color: Math.random() > 0.5 ? '255, 255, 255' : '20, 184, 166' // White or Teal
+        size: Math.random() * 10 + 5,
+        type: 'foam'
       });
+    }
+
+    // 2. Sparkles (Water droplets) - fly out
+    for (let i = 0; i < 2; i++) {
+        particlesRef.current.push({
+          x: x,
+          y: y,
+          vx: (Math.random() - 0.5) * 8,
+          vy: (Math.random() - 0.5) * 8,
+          life: 1.0,
+          size: Math.random() * 3 + 1,
+          type: 'sparkle'
+        });
     }
   };
 
@@ -161,16 +174,34 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
       const p = particlesRef.current[i];
       p.x += p.vx;
       p.y += p.vy;
-      p.life -= 0.05; // Fade out speed
-      p.size *= 0.95; // Shrink
+      
+      if (p.type === 'foam') {
+        p.life -= 0.02; // Foam lasts longer
+        p.size *= 0.98; // Shrinks slowly
+      } else {
+        p.life -= 0.05; // Sparkles fade fast
+      }
 
       if (p.life <= 0) {
         particlesRef.current.splice(i, 1);
       } else {
         ctx.beginPath();
-        ctx.fillStyle = `rgba(${p.color}, ${p.life})`;
-        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-        ctx.fill();
+        if (p.type === 'foam') {
+             // White, bubbly foam
+            ctx.fillStyle = `rgba(255, 255, 255, ${p.life * 0.6})`;
+            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+            ctx.fill();
+            // Highlight
+            ctx.fillStyle = `rgba(255, 255, 255, ${p.life * 0.9})`;
+            ctx.beginPath();
+            ctx.arc(p.x - p.size*0.3, p.y - p.size*0.3, p.size*0.3, 0, Math.PI * 2);
+            ctx.fill();
+        } else {
+            // Shiny sparkles
+            ctx.fillStyle = `rgba(200, 250, 255, ${p.life})`;
+            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+            ctx.fill();
+        }
       }
     }
   };
@@ -199,22 +230,22 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
         const x = current.x;
         const y = current.y;
 
-        // Visual Enhancement: More dynamic cursor
-        // 1. Outer Glow
+        // Visual Enhancement: Sponge Cursor
+        // 1. Outer Glow (Water)
         const grad = ctx.createRadialGradient(x, y, 0, x, y, brushSize / 1.5);
-        grad.addColorStop(0, 'rgba(255, 255, 255, 0.6)');
-        grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        grad.addColorStop(0, 'rgba(20, 184, 166, 0.2)');
+        grad.addColorStop(1, 'rgba(20, 184, 166, 0)');
         ctx.fillStyle = grad;
         ctx.beginPath();
         ctx.arc(x, y, brushSize / 1.5, 0, Math.PI * 2);
         ctx.fill();
 
-        // 2. Center "Sponge"
-        ctx.shadowBlur = 15;
-        ctx.shadowColor = "rgba(20, 184, 166, 0.5)";
-        ctx.fillStyle = "#14b8a6"; // Teal
+        // 2. Center "Tool"
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = "rgba(255, 255, 255, 0.8)";
+        ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
         ctx.beginPath();
-        ctx.arc(x, y, 10, 0, Math.PI * 2);
+        ctx.arc(x, y, 15, 0, Math.PI * 2);
         ctx.fill();
         ctx.shadowBlur = 0;
       }
@@ -222,7 +253,6 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
 
     if ((isHandDetected || inputType === 'mouse') && !isComplete) {
       handleWipe(current.x, current.y);
-      // Spawn particles when wiping
       spawnParticles(current.x, current.y);
     }
 
