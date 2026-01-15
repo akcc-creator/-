@@ -68,6 +68,11 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
 
     const startTracking = async () => {
       try {
+        if (typeof Hands === 'undefined' || typeof Camera === 'undefined') {
+            console.warn("MediaPipe scripts not loaded yet. Mouse fallback active.");
+            return;
+        }
+
         hands = new Hands({
           locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
         });
@@ -142,20 +147,20 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
 
   // --- 3. ENHANCED PARTICLE SYSTEM (FOAM & SPARKLES) ---
   const spawnParticles = (x: number, y: number) => {
-    // 1. Foam (Bubbles) - stay largely in place, shrink
-    for (let i = 0; i < 2; i++) {
+    // 1. Foam (Bubbles) - Increased count for better feedback
+    for (let i = 0; i < 3; i++) {
       particlesRef.current.push({
         x: x + (Math.random() - 0.5) * brushSize * 0.8,
         y: y + (Math.random() - 0.5) * brushSize * 0.8,
         vx: (Math.random() - 0.5) * 0.5,
         vy: (Math.random() - 0.5) * 0.5,
         life: 1.0,
-        size: Math.random() * 10 + 5,
+        size: Math.random() * 12 + 6,
         type: 'foam'
       });
     }
 
-    // 2. Sparkles (Water droplets) - fly out
+    // 2. Sparkles (Water droplets)
     for (let i = 0; i < 2; i++) {
         particlesRef.current.push({
           x: x,
@@ -176,10 +181,10 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
       p.y += p.vy;
       
       if (p.type === 'foam') {
-        p.life -= 0.02; // Foam lasts longer
-        p.size *= 0.98; // Shrinks slowly
+        p.life -= 0.02; 
+        p.size *= 0.98;
       } else {
-        p.life -= 0.05; // Sparkles fade fast
+        p.life -= 0.05; 
       }
 
       if (p.life <= 0) {
@@ -188,11 +193,11 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
         ctx.beginPath();
         if (p.type === 'foam') {
              // White, bubbly foam
-            ctx.fillStyle = `rgba(255, 255, 255, ${p.life * 0.6})`;
+            ctx.fillStyle = `rgba(255, 255, 255, ${p.life * 0.7})`;
             ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
             ctx.fill();
             // Highlight
-            ctx.fillStyle = `rgba(255, 255, 255, ${p.life * 0.9})`;
+            ctx.fillStyle = `rgba(255, 255, 255, ${p.life})`;
             ctx.beginPath();
             ctx.arc(p.x - p.size*0.3, p.y - p.size*0.3, p.size*0.3, 0, Math.PI * 2);
             ctx.fill();
@@ -230,23 +235,28 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
         const x = current.x;
         const y = current.y;
 
-        // Visual Enhancement: Sponge Cursor
-        // 1. Outer Glow (Water)
+        // Visual Enhancement: HAND CURSOR
+        
+        // 1. Cleaning Area Glow (Keep brushSize)
         const grad = ctx.createRadialGradient(x, y, 0, x, y, brushSize / 1.5);
-        grad.addColorStop(0, 'rgba(20, 184, 166, 0.2)');
-        grad.addColorStop(1, 'rgba(20, 184, 166, 0)');
+        grad.addColorStop(0, 'rgba(255, 255, 255, 0.5)');
+        grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
         ctx.fillStyle = grad;
         ctx.beginPath();
         ctx.arc(x, y, brushSize / 1.5, 0, Math.PI * 2);
         ctx.fill();
 
-        // 2. Center "Tool"
+        // 2. Hand Emoji
+        // Adjusted to 0.5 for better visibility (60% larger than previous fail)
+        const handSize = brushSize * 0.5; 
+        
+        ctx.font = `${handSize}px Arial`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        
+        ctx.shadowColor = 'rgba(0,0,0,0.3)';
         ctx.shadowBlur = 10;
-        ctx.shadowColor = "rgba(255, 255, 255, 0.8)";
-        ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
-        ctx.beginPath();
-        ctx.arc(x, y, 15, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.fillText('🖐️', x, y);
         ctx.shadowBlur = 0;
       }
     }
@@ -341,10 +351,11 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
 
     ctx.globalCompositeOperation = 'destination-out';
     
-    // Hardness calculation
-    const hardness = 1 / (wipesRequired * 1.5); 
-    ctx.strokeStyle = `rgba(0, 0, 0, ${hardness})`; 
+    // Increased hardness: Removing the factor makes it wipe cleaner, faster.
+    // e.g. wipesRequired=4 => opacity ~0.25 per frame (stronger than 0.16)
+    const hardness = 1 / Math.max(1, wipesRequired); 
     
+    ctx.strokeStyle = `rgba(0, 0, 0, ${hardness})`; 
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.lineWidth = brushSize;
@@ -376,24 +387,19 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
       style={{ backgroundImage: `url(${backgroundImage})` }}
       onPointerMove={handlePointerMove}
     >
-      {/* 1. Stain Layer */}
       <canvas ref={stainCanvasRef} className="absolute top-0 left-0 w-full h-full z-10" />
-
-      {/* 2. Cursor & Particle Layer */}
       <canvas ref={cursorCanvasRef} className="absolute top-0 left-0 w-full h-full z-20 pointer-events-none" />
 
-      {/* 3. Lost Tracking Message */}
       {!isHandDetected && inputType === 'camera' && !isComplete && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30">
           <div className="bg-slate-900/40 backdrop-blur-sm p-6 rounded-2xl text-white flex flex-col items-center animate-pulse border border-white/20">
             <i className="fas fa-hand-paper text-5xl mb-3 text-teal-300"></i>
             <p className="text-xl font-bold">偵測中...</p>
-            <p className="text-sm opacity-90 mt-1">請在鏡頭前揮手</p>
+            <p className="text-sm opacity-90 mt-1">請在鏡頭前揮手 (或使用滑鼠)</p>
           </div>
         </div>
       )}
 
-      {/* 4. Complete Overlay */}
       {isComplete && (
         <div className="absolute inset-0 flex items-center justify-center bg-white/20 backdrop-blur-md transition-opacity duration-1000 z-50">
           <div className="bg-white/90 p-12 rounded-[3rem] shadow-2xl flex flex-col items-center border-4 border-teal-500 transform scale-110">

@@ -1,22 +1,28 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useCallback } from 'react';
 import { BACKGROUNDS, DEFAULT_BRUSH_SIZE, COMPLETION_THRESHOLD } from './constants';
 import { GameState, BackgroundInfo } from './types';
 import CleaningCanvas from './components/CleaningCanvas';
-import { generateThemeBackground, generateRandomBackground } from './services/imageService';
+import { generateThemeBackground, generateRandomBackground, GenerationResult } from './services/imageService';
 
 const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>(GameState.START);
   const [currentBg, setCurrentBg] = useState<BackgroundInfo>(BACKGROUNDS[0]);
   const [customBgUrl, setCustomBgUrl] = useState<string | null>(null);
+  const [imageSource, setImageSource] = useState<'AI' | 'FALLBACK' | 'PRESET'>('PRESET');
   const [progress, setProgress] = useState(0);
   const [isTherapistMode, setIsTherapistMode] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [wipesRequired, setWipesRequired] = useState(4); // Default 4 wipes
+  const [wipesRequired, setWipesRequired] = useState(4); 
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+
+  // Check if API Key is detected (for UI indication only)
+  const hasApiKey = !!process.env.API_KEY;
 
   const startLevel = (bg: BackgroundInfo) => {
     setCurrentBg(bg);
     setCustomBgUrl(null);
+    setImageSource('PRESET');
     setProgress(0);
     setGameState(GameState.PLAYING);
   };
@@ -28,36 +34,48 @@ const App: React.FC = () => {
     }
   }, [gameState]);
 
-  // Wrapper for generation
-  const handleGeneration = async (genFunction: () => Promise<string | null>, successCallback: (url: string) => void) => {
+  const handleGeneration = async (
+      genFunction: () => Promise<GenerationResult | null>, 
+      successCallback: (result: GenerationResult) => void
+  ) => {
     setIsGenerating(true);
+    setErrorMsg(null);
     try {
         const result = await genFunction();
-        // The service now handles 429/errors by returning a fallback URL, so result should always be valid string
         if (result) {
             successCallback(result);
         } else {
-            // Should theoretically not happen with fallback, but just in case
-            console.error("No result returned");
-            // Fail silently or just pick random local
-            const fallback = BACKGROUNDS[0].url;
-            successCallback(fallback);
+            throw new Error("No result returned");
         }
     } catch (e: any) {
-        console.error("Critical error in app flow:", e);
-        // Absolute last resort fallback
-        successCallback(BACKGROUNDS[0].url);
+        console.error("Generation error:", e);
+        
+        // Friendly Error Messages
+        let friendlyMsg = "AI 連線失敗，請檢查網路。";
+        const rawMsg = e.message || "";
+
+        if (rawMsg.includes("API Key")) {
+            friendlyMsg = "找不到 API Key。\n請確認 .env 檔案已設定 API_KEY。";
+        } else if (rawMsg.includes("429") || rawMsg.includes("Quota")) {
+            friendlyMsg = "AI 畫師目前太忙碌 (額度不足)。\n請稍後再試。";
+        } else if (rawMsg.includes("Server endpoint")) {
+            friendlyMsg = "伺服器連線錯誤。\n若是本機執行，請確認 .env 有設定 API_KEY。";
+        } else if (rawMsg.includes("Candidate was blocked")) {
+            friendlyMsg = "AI 拒絕繪製此主題 (安全過濾)。\n請試試其他主題。";
+        }
+        
+        setErrorMsg(friendlyMsg);
     } finally {
         setIsGenerating(false);
     }
   };
 
-  // Generate specific theme (used for Therapist mode OR continuing a category)
   const generateNewBackground = async (prompt: string) => {
     await handleGeneration(
         () => generateThemeBackground(prompt),
-        (url) => {
-            setCustomBgUrl(url);
+        (result) => {
+            setCustomBgUrl(result.url);
+            setImageSource(result.source);
             setProgress(0);
             setGameState(GameState.PLAYING);
         }
@@ -67,34 +85,59 @@ const App: React.FC = () => {
   const handleRandomPlay = async () => {
       await handleGeneration(
           () => generateRandomBackground(),
-          (url) => {
+          (result) => {
             setCurrentBg({
                 id: 'random',
-                url: url,
+                url: result.url,
                 label: '神秘世界',
                 emoji: '🎲',
                 prompt: 'Random generation'
             });
-            setCustomBgUrl(url);
+            setCustomBgUrl(result.url);
+            setImageSource(result.source);
             setProgress(0);
             setGameState(GameState.PLAYING);
-          }
-      );
+        }
+    );
   };
 
   const handleNextLevel = () => {
-    // Logic: If currently in "Random" mode, generate another random.
-    // If in a specific category (e.g., Garden), generate a NEW image for that category.
     if (currentBg.id === 'random') {
         handleRandomPlay();
     } else {
-        // Use the prompt from the current category to generate a fresh image
         generateNewBackground(currentBg.prompt);
     }
   };
 
   return (
     <div className="relative w-screen h-screen flex flex-col bg-[#f8fafc]">
+      {/* Error Modal */}
+      {errorMsg && (
+        <div className="absolute inset-0 z-[100] bg-black/60 backdrop-blur-md flex items-center justify-center p-4">
+            <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl text-center border-4 border-red-100 animate-[bounceIn_0.5s_cubic-bezier(0.175,0.885,0.32,1.275)]">
+                <div className="text-6xl mb-4">😵‍💫</div>
+                <h3 className="text-2xl font-black text-slate-800 mb-2">哎呀！出錯了</h3>
+                <p className="text-slate-600 mb-8 font-bold whitespace-pre-line leading-relaxed bg-slate-50 p-4 rounded-xl">
+                    {errorMsg}
+                </p>
+                <div className="flex gap-4 justify-center">
+                    <button 
+                        onClick={() => setErrorMsg(null)}
+                        className="px-6 py-3 rounded-xl bg-slate-200 text-slate-600 font-bold hover:bg-slate-300 transition-colors"
+                    >
+                        關閉
+                    </button>
+                    <button 
+                        onClick={() => { setErrorMsg(null); handleRandomPlay(); }}
+                        className="px-6 py-3 rounded-xl bg-teal-500 text-white font-bold hover:bg-teal-600 transition-colors shadow-lg flex items-center gap-2"
+                    >
+                        <i className="fas fa-redo"></i> 再試一次
+                    </button>
+                </div>
+            </div>
+        </div>
+      )}
+
       <header className="absolute top-0 left-0 right-0 z-20 p-6 flex justify-between items-start pointer-events-none">
         <div className="bg-white/95 backdrop-blur-md px-10 py-4 rounded-full shadow-2xl pointer-events-auto border border-teal-100 flex items-center gap-4">
           <span className="text-3xl">✨</span>
@@ -148,19 +191,22 @@ const App: React.FC = () => {
                 <button 
                     onClick={handleRandomPlay}
                     disabled={isGenerating}
-                    className="group relative inline-flex items-center gap-4 bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white px-10 py-5 rounded-full shadow-2xl hover:scale-105 transition-all disabled:opacity-50 disabled:scale-100"
+                    className="group relative inline-flex items-center gap-4 bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white px-12 py-6 rounded-full shadow-2xl hover:scale-105 transition-all disabled:opacity-50 disabled:scale-100 active:scale-95"
                 >
                     {isGenerating ? (
                         <>
-                            <i className="fas fa-spinner animate-spin text-3xl"></i>
-                            <span className="text-2xl font-black">生成神秘景點中...</span>
+                            <i className="fas fa-spinner animate-spin text-4xl"></i>
+                            <div className="text-left">
+                                <div className="text-2xl font-black">AI 正在繪製中...</div>
+                                <div className="text-sm font-medium opacity-90">請稍候</div>
+                            </div>
                         </>
                     ) : (
                         <>
-                            <span className="text-4xl animate-bounce">🌍</span>
+                            <span className="text-5xl animate-bounce">🌍</span>
                             <div className="text-left">
-                                <div className="text-2xl font-black">隨機去旅行</div>
-                                <div className="text-sm font-medium opacity-90">任何驚喜地點！城市、美食、大自然...</div>
+                                <div className="text-3xl font-black">隨機去旅行</div>
+                                <div className="text-base font-medium opacity-90">AI 帶你去未知的地方！</div>
                             </div>
                         </>
                     )}
@@ -188,13 +234,22 @@ const App: React.FC = () => {
             </div>
           </div>
         ) : (
-          <CleaningCanvas
-            backgroundImage={customBgUrl || currentBg.url}
-            brushSize={DEFAULT_BRUSH_SIZE}
-            wipesRequired={wipesRequired}
-            onProgress={handleProgress}
-            isComplete={gameState === GameState.COMPLETED}
-          />
+          <>
+            {/* Source Badge */}
+            <div className="absolute top-28 left-8 z-30 bg-black/40 backdrop-blur-md text-white px-5 py-2 rounded-full font-bold text-sm border border-white/20 shadow-lg flex items-center gap-2 animate-fade-in">
+                {imageSource === 'AI' && <><i className="fas fa-magic text-yellow-300"></i> AI 即時生成</>}
+                {imageSource === 'FALLBACK' && <><i className="fas fa-images text-blue-300"></i> 精選圖庫 (備援)</>}
+                {imageSource === 'PRESET' && <><i className="fas fa-star text-orange-300"></i> 經典景點</>}
+            </div>
+
+            <CleaningCanvas
+                backgroundImage={customBgUrl || currentBg.url}
+                brushSize={DEFAULT_BRUSH_SIZE}
+                wipesRequired={wipesRequired}
+                onProgress={handleProgress}
+                isComplete={gameState === GameState.COMPLETED}
+            />
+          </>
         )}
       </main>
 
@@ -234,6 +289,13 @@ const App: React.FC = () => {
           <h3 className="text-2xl font-black text-slate-800 mb-8 flex items-center gap-3">
             <i className="fas fa-sliders-h text-teal-600"></i> 復健設定
           </h3>
+
+          <div className="mb-6 p-4 bg-slate-100 rounded-xl flex items-center justify-between">
+             <span className="text-sm font-bold text-slate-600">API Key 狀態:</span>
+             <span className={`px-3 py-1 rounded-full text-xs font-black ${hasApiKey ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                {hasApiKey ? '已連線 OK' : '未偵測 Missing'}
+             </span>
+          </div>
           
           <div className="space-y-10">
              <div className="space-y-4">
@@ -250,7 +312,7 @@ const App: React.FC = () => {
                   className="w-full h-3 bg-teal-100 rounded-full appearance-none cursor-pointer accent-teal-600"
                 />
                 <p className="text-xs text-slate-400 font-bold italic leading-relaxed">
-                  數值越高，同一區域需要抹擦更多次才能完全看見底圖。建議從 4 下開始。
+                  數值越高，同一區域需要抹擦更多次才能完全看見底圖。
                 </p>
              </div>
 

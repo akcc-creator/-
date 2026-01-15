@@ -2,25 +2,27 @@
 import { GoogleGenAI } from '@google/genai';
 import { BACKGROUNDS } from '../constants';
 
-// === HYBRID STRATEGY ===
-// 1. Local Development: Use Client-side SDK directly.
-// 2. Production (Vercel): Use /api/generate proxy.
-// 3. Fallback: If API fails (Quota/Net), use local curated list.
+// === GENERATION STRATEGY ===
+// 1. If API_KEY is present in client bundle -> Use Client-Side SDK (Fastest, works on static hosts/local).
+// 2. If API_KEY is missing -> Try /api/generate endpoint (For Vercel deployments where key is server-side only).
+// 3. If both fail -> Throw specific error to UI.
 
-const getRandomFallback = () => {
-  const randomIndex = Math.floor(Math.random() * BACKGROUNDS.length);
-  console.log("Using Fallback Image due to API limits");
-  return BACKGROUNDS[randomIndex].url;
-};
+export interface GenerationResult {
+  url: string;
+  source: 'AI' | 'FALLBACK';
+}
+
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 const generateClientSide = async (prompt: string): Promise<string | null> => {
-  if (!process.env.API_KEY) throw new Error("Local Dev: API Key missing in .env");
+  if (!process.env.API_KEY) return null; // Should not happen if check passed
   
+  console.log("Generating with Client-Side SDK...");
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   const response = await ai.models.generateContent({
     model: 'gemini-2.5-flash-image',
     contents: {
-      parts: [{ text: prompt + ". Photorealistic, high quality, vivid colors, 16:9 aspect ratio, cinematic lighting." }],
+      parts: [{ text: prompt + ". Photorealistic, 8k resolution, highly detailed, vivid colors, 16:9 aspect ratio, cinematic lighting." }],
     },
     config: {
       imageConfig: { aspectRatio: "16:9" }
@@ -37,39 +39,87 @@ const generateClientSide = async (prompt: string): Promise<string | null> => {
 };
 
 const generateServerSide = async (prompt: string): Promise<string | null> => {
-  const response = await fetch('/api/generate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt }),
-  });
-  
-  const data = await response.json();
-  if (!response.ok) {
-    // Pass the error message up so we can decide to fallback
-    throw new Error(data.error || 'Server generation failed');
-  }
-  return data.image;
-};
-
-export const generateThemeBackground = async (prompt: string): Promise<string | null> => {
+  console.log("Generating with Server-Side Proxy...");
   try {
-    // Check if we are in Local Dev AND have a key available
-    if ((import.meta as any).env.DEV && process.env.API_KEY) {
-      console.log("Using Client-side generation (Local Dev)");
-      return await generateClientSide(prompt);
-    } else {
-      console.log("Using Server-side generation (Production)");
-      return await generateServerSide(prompt);
+    const response = await fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+    
+    // Handle HTML response (common when hitting 404 on Vite dev server)
+    const contentType = response.headers.get("content-type");
+    if (contentType && contentType.includes("text/html")) {
+      throw new Error("Server endpoint not found. (If running locally, set API_KEY in .env)");
     }
-  } catch (error: any) {
-    // CRITICAL FIX: Instead of crashing/alerting on 429 or Network Error, 
-    // simply return a high-quality fallback image.
-    console.warn("AI Generation Failed (switching to fallback):", error.message);
-    return getRandomFallback();
+
+    const data = await response.json();
+    if (!response.ok) {
+      throw new Error(data.error || 'Server generation failed');
+    }
+    return data.image;
+  } catch (e: any) {
+    console.warn("Server-side generation error:", e);
+    throw e;
   }
 };
 
-export const generateRandomBackground = async (): Promise<string | null> => {
+const attemptGeneration = async (
+  genFunc: () => Promise<string | null>, 
+  maxRetries = 3
+): Promise<string | null> => {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      if (i > 0) console.log(`Retry attempt ${i + 1}/${maxRetries}...`);
+      const result = await genFunc();
+      if (result) return result;
+    } catch (error: any) {
+      console.warn(`Attempt ${i + 1} failed:`, error.message);
+      
+      // Stop retrying if it's a configuration error (missing key/endpoint)
+      if (error.message.includes("not found") || error.message.includes("API_KEY in .env")) {
+        throw error;
+      }
+      
+      if (i === maxRetries - 1) throw error;
+      
+      // Backoff: 2s, 4s, 8s
+      const waitTime = 2000 * Math.pow(2, i); 
+      await delay(waitTime);
+    }
+  }
+  return null;
+};
+
+export const generateThemeBackground = async (prompt: string): Promise<GenerationResult | null> => {
+  try {
+    let imageUrl: string | null = null;
+    
+    // Check if we have the key directly available
+    const hasClientKey = !!process.env.API_KEY;
+
+    imageUrl = await attemptGeneration(async () => {
+      if (hasClientKey) {
+        return await generateClientSide(prompt);
+      } else {
+        return await generateServerSide(prompt);
+      }
+    });
+
+    if (!imageUrl) throw new Error("No image data returned.");
+
+    return {
+        url: imageUrl,
+        source: 'AI'
+    };
+
+  } catch (error: any) {
+    console.error("AI Generation Failed:", error);
+    throw error; // Propagate to App.tsx for the error modal
+  }
+};
+
+export const generateRandomBackground = async (): Promise<GenerationResult | null> => {
   const themes = [
     "A cute fluffy cat wearing sunglasses on a beach",
     "A futuristic cyberpunk city with neon lights and flying cars",
