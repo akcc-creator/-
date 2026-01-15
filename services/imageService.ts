@@ -15,7 +15,11 @@ export interface GenerationResult {
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 const generateClientSide = async (prompt: string): Promise<string | null> => {
-  if (!process.env.API_KEY) return null; // Should not happen if check passed
+  // Debug check
+  if (!process.env.API_KEY) {
+    console.warn("Client-Side Generation Skipped: API_KEY not found in process.env");
+    return null;
+  }
   
   console.log("Generating with Client-Side SDK...");
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
@@ -47,10 +51,10 @@ const generateServerSide = async (prompt: string): Promise<string | null> => {
       body: JSON.stringify({ prompt }),
     });
     
-    // Handle HTML response (common when hitting 404 on Vite dev server)
+    // Handle HTML response (common when hitting 404 on Vite dev server or Vercel routing issues)
     const contentType = response.headers.get("content-type");
     if (contentType && contentType.includes("text/html")) {
-      throw new Error("Server endpoint not found. (If running locally, set API_KEY in .env)");
+      throw new Error("Server endpoint unreachable. Please check Vercel API function logs.");
     }
 
     const data = await response.json();
@@ -77,7 +81,7 @@ const attemptGeneration = async (
       console.warn(`Attempt ${i + 1} failed:`, error.message);
       
       // Stop retrying if it's a configuration error (missing key/endpoint)
-      if (error.message.includes("not found") || error.message.includes("API_KEY in .env")) {
+      if (error.message.includes("not found") || error.message.includes("API_KEY")) {
         throw error;
       }
       
@@ -98,6 +102,7 @@ export const generateThemeBackground = async (prompt: string): Promise<Generatio
     // Check if we have the key directly available
     const hasClientKey = !!process.env.API_KEY;
 
+    // Strategy: Prefer Client Side on Vercel Hobby (avoids 10s server timeout)
     imageUrl = await attemptGeneration(async () => {
       if (hasClientKey) {
         return await generateClientSide(prompt);
