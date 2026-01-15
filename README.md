@@ -1,11 +1,25 @@
-<div align="center">
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+# ZenClean - 舒心抹窗復健遊戲 (升級版)
 
-  <h1>Built with AI Studio</h2>
+這是一個專為長者復健設計的「凌空抹窗」互動應用程式。
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+## 更新功能
+1. **漸進式透明度 (Gradual Reveal)**：
+   - 修正了原本一抹即逝的問題。現在使用者必須在同一區域**反覆抹擦** (預設至少 3-4 次)，該處的污漬才會逐漸變薄、變透明，最後完全浮現底圖。
+   - 這種機制強制使用者進行重複的大幅度肢體運動，達到更佳的復健效果。
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+2. **難度自訂化**：
+   - 在「設定 (治療師模式)」中，可以自由調整需要抹擦的次數 (3 - 15 次)。
+   - 越高的次數代表使用者需要更強的耐力與重複運動次數。
 
-</div>
+3. **神秘驚喜介面**：
+   - 主選單改用大型 **Emoji 圖示** 代表不同題材。
+   - 縮圖預覽被隱藏，增加「探索」的趣味性與動力。
+
+4. **視覺回饋強化**：
+   - 增大的虛擬手掌提示，配合動態脈動效果。
+   - 修正進度條計算邏輯，現在能更精確反映「透明度」的累積程度，而非僅僅是覆蓋面積。
+
+## 技術說明
+- **Canvas Blending**：透過 `destination-out` 配合極低的 `globalAlpha` (由 `1/wipesRequired` 計算) 實現圖層的物理堆疊消除。
+- **Hand Tracking**：整合 MediaPipe Hands，實時追蹤並映射手部動作至虛擬空間。
