@@ -32,7 +32,8 @@ const App: React.FC = () => {
 
   const handleProgress = useCallback((percent: number) => {
     setProgress(percent);
-    if (percent >= COMPLETION_THRESHOLD && gameState !== GameState.COMPLETED) {
+    // If percent hits 100 (which CleaningCanvas now forces), complete immediately
+    if (percent >= 100 && gameState !== GameState.COMPLETED) {
       setGameState(GameState.COMPLETED);
     }
   }, [gameState]);
@@ -242,7 +243,8 @@ const App: React.FC = () => {
                     className="group flex flex-col items-center gap-6"
                   >
                     <div className="relative w-full aspect-square rounded-[3rem] overflow-hidden shadow-2xl transition-all duration-300 group-hover:scale-105 group-active:scale-95 bg-white flex items-center justify-center border-8 border-transparent group-hover:border-teal-400 group-hover:shadow-teal-200/50">
-                      <span className="text-8xl transform group-hover:scale-125 transition-transform duration-500 grayscale group-hover:grayscale-0">
+                      {/* Removed grayscale classes to make icons colorful */}
+                      <span className="text-8xl transform group-hover:scale-125 transition-transform duration-500">
                         {bg.emoji}
                       </span>
                       {/* Mysterious Overlay */}
@@ -264,6 +266,8 @@ const App: React.FC = () => {
             </div>
 
             <CleaningCanvas
+                // FIX: Add Key to force remount on image change, ensuring fog layer resets correctly
+                key={customBgUrl || currentBg.url}
                 backgroundImage={customBgUrl || currentBg.url}
                 brushSize={DEFAULT_BRUSH_SIZE}
                 wipesRequired={wipesRequired}

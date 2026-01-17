@@ -2,14 +2,21 @@
 import { GoogleGenAI } from '@google/genai';
 
 // === GENERATION STRATEGY ===
-// 1. If API_KEY is present in client bundle -> Use Client-Side SDK (Fastest, works on static hosts/local).
-// 2. If API_KEY is missing -> Try /api/generate endpoint (For Vercel deployments where key is server-side only).
-// 3. If both fail -> Throw specific error to UI.
+// 1. If API_KEY is present in client bundle -> Use Client-Side SDK.
+// 2. If API_KEY is missing -> Try /api/generate endpoint.
+// 3. Model Fallback: Try Flash -> If 429/Error -> Try Pro.
 
 export interface GenerationResult {
   url: string;
   source: 'AI' | 'FALLBACK';
 }
+
+// Models to attempt in order. 
+// Using two different models leverages two separate quota buckets.
+const MODELS_TO_TRY = [
+  'gemini-2.5-flash-image',      // Priority 1: Fast, Standard Quota
+  'gemini-3-pro-image-preview'   // Priority 2: High Quality, Separate Quota
+];
 
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -18,28 +25,43 @@ const generateClientSide = async (prompt: string): Promise<string | null> => {
   if (!process.env.API_KEY) {
     console.warn("❌ Client-Side: API_KEY is missing in process.env");
     return null;
-  } else {
-    console.log("✅ Client-Side: API_KEY found. Length:", process.env.API_KEY.length);
   }
   
-  console.log("Generating with Client-Side SDK (Imagen 3)...");
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-  
-  // Switch to Imagen 3 (imagen-3.0-generate-001) using generateImages API
-  // This helps bypass the quota limits often hit by gemini-2.5-flash-image
-  const response = await ai.models.generateImages({
-    model: 'imagen-3.0-generate-001',
-    prompt: prompt + ". Photorealistic, 8k resolution, highly detailed, vivid colors, 16:9 aspect ratio, cinematic lighting.",
-    config: {
-      numberOfImages: 1,
-      aspectRatio: '16:9',
-      outputMimeType: 'image/jpeg'
-    }
-  });
+  const enhancedPrompt = prompt + ". Photorealistic, 8k resolution, highly detailed, vivid colors, 16:9 aspect ratio, cinematic lighting.";
 
-  const imageBytes = response.generatedImages?.[0]?.image?.imageBytes;
-  if (imageBytes) {
-    return `data:image/jpeg;base64,${imageBytes}`;
+  // Iterate through models for fallback
+  for (const model of MODELS_TO_TRY) {
+    try {
+      console.log(`🎨 Client: Generating with model [${model}]...`);
+      
+      const response = await ai.models.generateContent({
+        model: model,
+        contents: {
+          parts: [{ text: enhancedPrompt }],
+        },
+        config: {
+          imageConfig: { aspectRatio: "16:9" }
+        },
+      });
+
+      // Extract image from parts (Gemini style)
+      const parts = response.candidates?.[0]?.content?.parts;
+      if (parts) {
+        for (const part of parts) {
+          if (part.inlineData) {
+            console.log(`✅ Success with [${model}]`);
+            return `data:image/png;base64,${part.inlineData.data}`;
+          }
+        }
+      }
+      console.warn(`⚠️ [${model}] returned no inlineData.`);
+    } catch (e: any) {
+      console.warn(`❌ [${model}] Failed:`, e.message);
+      // If this was the last model, throw the error to be caught by the retry loop
+      if (model === MODELS_TO_TRY[MODELS_TO_TRY.length - 1]) throw e;
+      // Otherwise, continue to next model
+    }
   }
   return null;
 };
@@ -53,10 +75,9 @@ const generateServerSide = async (prompt: string): Promise<string | null> => {
       body: JSON.stringify({ prompt }),
     });
     
-    // Handle HTML response (common when hitting 404 on Vite dev server or Vercel routing issues)
     const contentType = response.headers.get("content-type");
     if (contentType && contentType.includes("text/html")) {
-      throw new Error("Server endpoint unreachable. Please check Vercel API function logs.");
+      throw new Error("Server endpoint unreachable.");
     }
 
     const data = await response.json();
@@ -72,26 +93,25 @@ const generateServerSide = async (prompt: string): Promise<string | null> => {
 
 const attemptGeneration = async (
   genFunc: () => Promise<string | null>, 
-  maxRetries = 3
+  maxRetries = 2
 ): Promise<string | null> => {
   for (let i = 0; i < maxRetries; i++) {
     try {
-      if (i > 0) console.log(`Retry attempt ${i + 1}/${maxRetries}...`);
+      if (i > 0) {
+        console.log(`Retry attempt ${i + 1}/${maxRetries}...`);
+        await delay(1000 * (i + 1)); // Backoff
+      }
       const result = await genFunc();
       if (result) return result;
     } catch (error: any) {
       console.warn(`Attempt ${i + 1} failed:`, error.message);
       
-      // Stop retrying if it's a configuration error (missing key/endpoint)
-      if (error.message.includes("not found") || error.message.includes("API_KEY") || error.message.includes("Missing")) {
+      // Stop retrying if key is missing
+      if (error.message.includes("API_KEY") || error.message.includes("Missing")) {
         throw error;
       }
       
       if (i === maxRetries - 1) throw error;
-      
-      // Backoff: 2s, 4s, 8s
-      const waitTime = 2000 * Math.pow(2, i); 
-      await delay(waitTime);
     }
   }
   return null;
@@ -100,11 +120,8 @@ const attemptGeneration = async (
 export const generateThemeBackground = async (prompt: string): Promise<GenerationResult | null> => {
   try {
     let imageUrl: string | null = null;
-    
-    // Check if we have the key directly available
     const hasClientKey = !!process.env.API_KEY;
 
-    // Strategy: Prefer Client Side on Vercel Hobby (avoids 10s server timeout)
     imageUrl = await attemptGeneration(async () => {
       if (hasClientKey) {
         return await generateClientSide(prompt);
@@ -121,8 +138,8 @@ export const generateThemeBackground = async (prompt: string): Promise<Generatio
     };
 
   } catch (error: any) {
-    console.error("AI Generation Failed:", error);
-    throw error; // Propagate to App.tsx for the error modal
+    console.error("AI Generation Service Error:", error);
+    throw error;
   }
 };
 

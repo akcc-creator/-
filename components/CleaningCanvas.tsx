@@ -16,6 +16,7 @@ declare const Camera: any;
 const TRACKING_SMOOTHING = 0.5; 
 const MOVEMENT_SENSITIVITY = 1.8; 
 const FOG_OPACITY = 0.98;
+const LOST_TRACKING_GRACE_PERIOD = 1000; // 1 second tolerance before showing "Lost Hand" UI
 
 const lerp = (start: number, end: number, factor: number) => start + (end - start) * factor;
 
@@ -27,7 +28,7 @@ interface Particle {
   vy: number;
   life: number;
   size: number;
-  type: 'foam' | 'sparkle' | 'grime'; // Added 'grime'
+  type: 'foam' | 'sparkle' | 'grime';
   color?: string;
 }
 
@@ -43,11 +44,14 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
   const cursorCanvasRef = useRef<HTMLCanvasElement>(null); // The cursor & particle layer
   const stainContextRef = useRef<CanvasRenderingContext2D | null>(null);
   
-  // State
-  const [isHandDetected, setIsHandDetected] = useState(false);
+  // State for UI
+  const [isTrackingActive, setIsTrackingActive] = useState(false); // Debounced tracking state
   const [inputType, setInputType] = useState<'camera' | 'mouse'>('camera');
   
-  // Refs for tracking loop
+  // Refs for tracking loop logic (avoiding re-renders)
+  const lastHandDetectionTime = useRef<number>(0);
+  const isHandRawDetected = useRef<boolean>(false);
+
   const targetPosRef = useRef({ x: 0, y: 0 }); 
   const currentPosRef = useRef({ x: 0, y: 0 });
   const lastDrawPosRef = useRef<{x: number, y: number} | null>(null);
@@ -86,8 +90,13 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
         });
 
         hands.onResults((results: any) => {
+          // Logic: Even if we lose the hand for a few frames, we keep the UI active
+          // until the GRACE_PERIOD expires.
+          
           if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-            setIsHandDetected(true);
+            isHandRawDetected.current = true;
+            lastHandDetectionTime.current = Date.now();
+            setIsTrackingActive(true); // Immediate activation
             setInputType('camera');
             
             const palm = results.multiHandLandmarks[0][9];
@@ -107,7 +116,9 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
               };
             }
           } else {
-            setIsHandDetected(false);
+            isHandRawDetected.current = false;
+            // Do NOT set isTrackingActive(false) here. 
+            // We let the checkInterval handle the timeout.
           }
         });
 
@@ -127,14 +138,26 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
 
     startTracking();
 
+    // Loop to check for tracking timeout (Grace Period)
+    const checkInterval = setInterval(() => {
+        if (isHandRawDetected.current) return; // Hand is currently there, no need to check timeout
+
+        const timeSinceLastHand = Date.now() - lastHandDetectionTime.current;
+        if (timeSinceLastHand > LOST_TRACKING_GRACE_PERIOD) {
+            setIsTrackingActive(false);
+        }
+    }, 200);
+
     return () => {
       if (camera) camera.stop();
+      clearInterval(checkInterval);
     };
   }, []);
 
   // --- 2. MOUSE FALLBACK ---
   const handlePointerMove = (e: React.PointerEvent) => {
-    if (!isHandDetected) {
+    // Only track pointer if game is NOT complete
+    if (!isTrackingActive && !isComplete) {
       setInputType('mouse');
       const canvas = stainCanvasRef.current;
       if (!canvas) return;
@@ -175,7 +198,6 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
     }
 
     // 3. Grime (Falling Dust/Dirt) - VISUAL ENHANCEMENT
-    // Spawns "dirt" that falls down, simulating physical cleaning
     for (let i = 0; i < 3; i++) {
         particlesRef.current.push({
             x: x + (Math.random() - 0.5) * brushSize,
@@ -185,7 +207,7 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
             life: 1.0,
             size: Math.random() * 4 + 2,
             type: 'grime',
-            color: Math.random() > 0.5 ? '#8B4513' : '#654321' // Brown/Dark dirt colors
+            color: Math.random() > 0.5 ? '#8B4513' : '#654321' 
         });
     }
   };
@@ -202,8 +224,8 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
       } else if (p.type === 'sparkle') {
         p.life -= 0.05; 
       } else if (p.type === 'grime') {
-        p.life -= 0.015; // Grime lasts longer as it falls
-        p.vy += 0.1;     // Accelerate (Gravity)
+        p.life -= 0.015; 
+        p.vy += 0.1;     
       }
 
       if (p.life <= 0 || p.y > ctx.canvas.height) {
@@ -219,8 +241,7 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
             ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
             ctx.fill();
         } else if (p.type === 'grime') {
-            // Draw grime as small jagged squares or circles
-            ctx.fillStyle = `rgba(100, 100, 100, ${p.life * 0.8})`; // Dark gray/brown
+            ctx.fillStyle = `rgba(100, 100, 100, ${p.life * 0.8})`; 
             ctx.fillRect(p.x, p.y, p.size, p.size);
         }
       }
@@ -235,6 +256,7 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
     const target = targetPosRef.current;
     const current = currentPosRef.current;
     
+    // Smooth interpolation even when tracking is lost briefly (targetPosRef stays at last known pos)
     current.x = lerp(current.x, target.x, TRACKING_SMOOTHING);
     current.y = lerp(current.y, target.y, TRACKING_SMOOTHING);
 
@@ -247,7 +269,9 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
         updateAndDrawParticles(ctx);
       }
 
-      if ((isHandDetected || inputType === 'mouse') && !isComplete) {
+      // Draw custom cursor ONLY if game is running (not complete)
+      // Use isTrackingActive instead of raw detection for smoother experience
+      if ((isTrackingActive || inputType === 'mouse') && !isComplete) {
         const x = current.x;
         const y = current.y;
 
@@ -273,13 +297,13 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
       }
     }
 
-    if ((isHandDetected || inputType === 'mouse') && !isComplete) {
+    if ((isTrackingActive || inputType === 'mouse') && !isComplete) {
       handleWipe(current.x, current.y);
       spawnParticles(current.x, current.y);
     }
 
     requestRef.current = requestAnimationFrame(animate);
-  }, [isHandDetected, inputType, isComplete, brushSize]);
+  }, [isTrackingActive, inputType, isComplete, brushSize]);
 
   useEffect(() => {
     requestRef.current = requestAnimationFrame(animate);
@@ -354,7 +378,13 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
 
     const totalPixels = (canvas.width * canvas.height) / stride;
     const percent = (totalTransparent / totalPixels) * 100;
-    onProgress(percent);
+
+    // Instant Completion Trigger: If we are extremely close to 100%, force it.
+    if (percent >= 99) {
+        onProgress(100);
+    } else {
+        onProgress(percent);
+    }
   }, [onProgress]);
 
   const handleWipe = (x: number, y: number) => {
@@ -386,7 +416,8 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
     lastDrawPosRef.current = { x, y };
     
     const now = Date.now();
-    if (now - lastProgressCheckTime.current > 150) {
+    // Increase check frequency slightly to catch 100% faster
+    if (now - lastProgressCheckTime.current > 100) {
         calculateProgress();
         lastProgressCheckTime.current = now;
     }
@@ -394,15 +425,30 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
 
   return (
     <div 
-      className="relative w-full h-full overflow-hidden select-none bg-cover bg-center cursor-none"
+      // FIX: Only hide cursor when game is active. Show default cursor when complete for UI interaction.
+      className={`relative w-full h-full overflow-hidden select-none bg-cover bg-center ${!isComplete ? 'cursor-none' : ''}`}
       style={{ backgroundImage: `url(${backgroundImage})` }}
       onPointerMove={handlePointerMove}
     >
       <canvas ref={stainCanvasRef} className="absolute top-0 left-0 w-full h-full z-10" />
       <canvas ref={cursorCanvasRef} className="absolute top-0 left-0 w-full h-full z-20 pointer-events-none" />
 
-      {!isHandDetected && inputType === 'camera' && !isComplete && (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30">
+      {/* Completion Flash Effect */}
+      {isComplete && (
+        <div className="absolute inset-0 z-40 pointer-events-none animate-[flash_1s_ease-out_forwards] border-[20px] border-white/80 shadow-[inset_0_0_100px_rgba(255,255,255,0.8)]">
+            <style>{`
+                @keyframes flash {
+                    0% { background-color: rgba(255, 255, 255, 0.9); opacity: 1; }
+                    50% { background-color: rgba(255, 255, 255, 0.4); opacity: 1; }
+                    100% { background-color: transparent; opacity: 0; }
+                }
+            `}</style>
+        </div>
+      )}
+
+      {/* Show Tracking UI only if we really lost the hand for > 1 sec AND not using mouse */}
+      {!isTrackingActive && inputType === 'camera' && !isComplete && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30 transition-opacity duration-500">
           <div className="bg-slate-900/40 backdrop-blur-sm p-6 rounded-2xl text-white flex flex-col items-center animate-pulse border border-white/20">
             <i className="fas fa-hand-paper text-5xl mb-3 text-teal-300"></i>
             <p className="text-xl font-bold">偵測中...</p>

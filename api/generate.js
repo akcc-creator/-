@@ -2,9 +2,14 @@
 import { GoogleGenAI } from '@google/genai';
 
 export const config = {
-    runtime: 'nodejs', // Force Node.js runtime for stability
-    maxDuration: 30,   // Allow up to 30 seconds for generation
+    runtime: 'nodejs',
+    maxDuration: 45, // Increase timeout for double attempts
 };
+
+const MODELS_TO_TRY = [
+  'gemini-2.5-flash-image',      
+  'gemini-3-pro-image-preview'   
+];
 
 export default async function handler(request, response) {
   if (request.method !== 'POST') {
@@ -20,30 +25,39 @@ export default async function handler(request, response) {
     }
 
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const enhancedPrompt = prompt + ". Photorealistic, 8k resolution, highly detailed, vivid colors, 16:9 aspect ratio, cinematic lighting.";
     
-    console.log("Server: Generating image with Imagen 3...");
+    // Server-side fallback loop
+    for (const model of MODELS_TO_TRY) {
+        try {
+            console.log(`Server: Generating with [${model}]...`);
+            const result = await ai.models.generateContent({
+                model: model,
+                contents: {
+                  parts: [{ text: enhancedPrompt }],
+                },
+                config: {
+                  imageConfig: { aspectRatio: "16:9" }
+                },
+            });
 
-    // Switch to Imagen 3 (imagen-3.0-generate-001)
-    const result = await ai.models.generateImages({
-      model: 'imagen-3.0-generate-001',
-      prompt: prompt + ". Photorealistic, 8k resolution, highly detailed, vivid colors, 16:9 aspect ratio, cinematic lighting.",
-      config: {
-        numberOfImages: 1,
-        aspectRatio: '16:9',
-        outputMimeType: 'image/jpeg'
-      },
-    });
-
-    let imageBase64 = null;
-    if (result.generatedImages && result.generatedImages.length > 0) {
-        imageBase64 = `data:image/jpeg;base64,${result.generatedImages[0].image.imageBytes}`;
+            const parts = result.candidates?.[0]?.content?.parts;
+            if (parts) {
+                for (const part of parts) {
+                    if (part.inlineData) {
+                         const imageBase64 = `data:image/png;base64,${part.inlineData.data}`;
+                         return response.status(200).json({ image: imageBase64 });
+                    }
+                }
+            }
+        } catch (e) {
+            console.warn(`Server: [${model}] failed: ${e.message}`);
+            // If it's the last model, throw
+            if (model === MODELS_TO_TRY[MODELS_TO_TRY.length - 1]) throw e;
+        }
     }
-
-    if (!imageBase64) {
-      throw new Error("Model returned no image data.");
-    }
-
-    return response.status(200).json({ image: imageBase64 });
+    
+    throw new Error("All models failed to generate image.");
 
   } catch (error) {
     console.error("Server API Error:", error);
