@@ -1,43 +1,75 @@
 
-import React, { useState, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { TOTAL_IMAGES_COUNT, DEFAULT_BRUSH_SIZE, COMPLETION_THRESHOLD, ALL_IMAGES } from './constants';
 import { GameState } from './types';
 import CleaningCanvas from './components/CleaningCanvas';
-import { getRandomImage } from './services/imageService';
+
+// Fisher-Yates Shuffle
+const shuffleDeck = (array: string[]) => {
+  const deck = [...array];
+  for (let i = deck.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [deck[i], deck[j]] = [deck[j], deck[i]];
+  }
+  return deck;
+};
 
 const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>(GameState.START);
   const [currentImgUrl, setCurrentImgUrl] = useState<string | null>(null);
   
-  // Track played images to show progress and avoid repeats
-  const [playedImages, setPlayedImages] = useState<Set<string>>(new Set());
+  // DECK LOGIC: Shuffled list of all images
+  const [imageDeck, setImageDeck] = useState<string[]>([]);
+  const [deckIndex, setDeckIndex] = useState(0); // Points to the NEXT image to play
+  
+  // Achievement Tracking
+  const [completedImages, setCompletedImages] = useState<Set<string>>(new Set());
   
   const [progress, setProgress] = useState(0);
   const [isTherapistMode, setIsTherapistMode] = useState(false);
   const [isLoading, setIsLoading] = useState(false); 
-  const [wipesRequired, setWipesRequired] = useState(5); // Default higher for exercise
+  const [wipesRequired, setWipesRequired] = useState(5); 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  const startRandomLevel = async () => {
+  // Initialize deck on mount
+  useEffect(() => {
+    setImageDeck(shuffleDeck(ALL_IMAGES));
+  }, []);
+
+  const startLevel = async () => {
     setIsLoading(true);
     setErrorMsg(null);
     try {
-        // Find an image we haven't played yet
-        let pool = ALL_IMAGES.filter(url => !playedImages.has(url));
-        
-        // If we've played everything, reset the pool (or loop)
-        if (pool.length === 0) {
-            pool = ALL_IMAGES;
-            // Optional: reset history if you want to loop: setPlayedImages(new Set());
+        let currentDeck = imageDeck;
+        let currentIndex = deckIndex;
+
+        // Ensure deck is ready (edge case for very fast interactions or initial load delay)
+        if (currentDeck.length === 0) {
+            currentDeck = shuffleDeck(ALL_IMAGES);
+            setImageDeck(currentDeck);
+            currentIndex = 0;
         }
 
-        // Pick random from the available pool
-        const randomUrl = pool[Math.floor(Math.random() * pool.length)];
+        // Check if we've gone through the whole deck
+        if (currentIndex >= currentDeck.length) {
+            // Option 1: Loop and reshuffle
+            currentDeck = shuffleDeck(ALL_IMAGES);
+            setImageDeck(currentDeck);
+            currentIndex = 0;
+            // Option 2: Could block here if strictly "stop after all played", 
+            // but for a game app, infinite play with new random order is usually better.
+            // We will stick to "infinite loop" but maintaining the random non-repeating cycle.
+        }
+
+        const nextUrl = currentDeck[currentIndex];
         
-        // Simulate delay consistent with previous UX
+        // Simulate loading delay
         await new Promise(resolve => setTimeout(resolve, 600));
 
-        setCurrentImgUrl(randomUrl);
+        setCurrentImgUrl(nextUrl);
+        // Prepare index for the NEXT turn
+        setDeckIndex(currentIndex + 1);
+        
         setProgress(0);
         setGameState(GameState.PLAYING);
         
@@ -50,17 +82,17 @@ const App: React.FC = () => {
   };
 
   const handleNextLevel = () => {
-    // If completed, add to played history
+    // If coming from COMPLETED state, record the achievement
     if (gameState === GameState.COMPLETED && currentImgUrl) {
-        setPlayedImages(prev => new Set(prev).add(currentImgUrl));
+        setCompletedImages(prev => new Set(prev).add(currentImgUrl));
     }
-    startRandomLevel();
+    startLevel();
   };
 
   const handleSkip = () => {
-     // Skip also picks a new one without marking current as 'completed' (optional choice)
-     // But to prevent seeing it again immediately, let's mark it as played or just pick next
-     startRandomLevel();
+     // Skip moves to next in deck (handled by startLevel incrementing index)
+     // Does not add to completedImages
+     startLevel();
   };
 
   const handleProgress = useCallback((val: number) => {
@@ -71,8 +103,11 @@ const App: React.FC = () => {
   }, [gameState]);
 
   // Calculate stats
-  const playedCount = playedImages.size;
-  const remainingCount = TOTAL_IMAGES_COUNT - playedCount;
+  const completedCount = completedImages.size;
+  // Use deckIndex to show how many "Opportunities" passed in this cycle, 
+  // or just use completedCount for "Score".
+  // The user asked to see "Total Available" and "Played".
+  const remainingCount = TOTAL_IMAGES_COUNT - completedCount;
 
   // Difficulty Labels
   const getDifficultyLabel = (val: number) => {
@@ -153,8 +188,8 @@ const App: React.FC = () => {
                   </div>
                   <div className="w-px h-12 bg-slate-300"></div>
                   <div className="text-center">
-                      <div className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-1">已探索</div>
-                      <div className="text-4xl font-black text-teal-600">{playedCount}</div>
+                      <div className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-1">已完成</div>
+                      <div className="text-4xl font-black text-teal-600">{completedCount}</div>
                   </div>
                   <div className="w-px h-12 bg-slate-300"></div>
                    <div className="text-center">
@@ -163,7 +198,7 @@ const App: React.FC = () => {
                   </div>
               </div>
 
-              {/* Difficulty Settings (Moved to Home Page) */}
+              {/* Difficulty Settings (Home Page) */}
               <div className="max-w-lg mx-auto bg-white/70 p-6 rounded-[2rem] shadow-lg border border-teal-50/50 backdrop-blur-md">
                  <div className="flex justify-between items-end mb-4">
                     <div className="text-left">
@@ -189,7 +224,7 @@ const App: React.FC = () => {
               
               <div className="pt-4">
                 <button 
-                    onClick={startRandomLevel}
+                    onClick={startLevel}
                     disabled={isLoading}
                     className="group relative inline-flex items-center gap-6 bg-gradient-to-r from-teal-500 to-emerald-500 text-white px-16 py-10 rounded-[3rem] shadow-[0_20px_50px_-12px_rgba(20,184,166,0.5)] hover:scale-105 hover:shadow-[0_30px_60px_-15px_rgba(20,184,166,0.6)] transition-all disabled:opacity-50 disabled:scale-100 active:scale-95 active:shadow-lg border-b-8 border-teal-700 active:border-b-0 active:translate-y-2"
                 >
@@ -210,9 +245,9 @@ const App: React.FC = () => {
                 </button>
               </div>
               
-              {playedCount === TOTAL_IMAGES_COUNT && (
-                 <div className="bg-yellow-100 text-yellow-800 px-6 py-3 rounded-full font-bold inline-block animate-pulse">
-                    🏆 恭喜！您已看過所有風景！
+              {completedCount === TOTAL_IMAGES_COUNT && (
+                 <div className="bg-yellow-100 text-yellow-800 px-8 py-4 rounded-2xl font-black text-xl inline-block animate-pulse shadow-lg border-2 border-yellow-200">
+                    🏆 太棒了！您已解鎖所有 {TOTAL_IMAGES_COUNT} 張美景！
                  </div>
               )}
             </div>
