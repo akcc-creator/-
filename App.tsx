@@ -1,4 +1,3 @@
-
 import React, { useState, useCallback } from 'react';
 import { BACKGROUNDS, DEFAULT_BRUSH_SIZE, COMPLETION_THRESHOLD } from './constants';
 import { GameState, BackgroundInfo } from './types';
@@ -9,82 +8,46 @@ const App: React.FC = () => {
   const [gameState, setGameState] = useState<GameState>(GameState.START);
   const [currentBg, setCurrentBg] = useState<BackgroundInfo>(BACKGROUNDS[0]);
   const [customBgUrl, setCustomBgUrl] = useState<string | null>(null);
-  const [imageSource, setImageSource] = useState<'AI' | 'FALLBACK' | 'PRESET'>('PRESET');
+  const [imageSource, setImageSource] = useState<'LIBRARY' | 'PRESET'>('PRESET');
   const [progress, setProgress] = useState(0);
   const [isTherapistMode, setIsTherapistMode] = useState(false);
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [isLoading, setIsLoading] = useState(false); 
   const [wipesRequired, setWipesRequired] = useState(4); 
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  
-  // Track specific error type for UI actions
-  const [isQuotaError, setIsQuotaError] = useState(false);
 
-  // Check if API Key is detected (for UI indication only)
-  const hasApiKey = !!process.env.API_KEY;
-
-  const startLevel = (bg: BackgroundInfo) => {
-    setCurrentBg(bg);
-    setCustomBgUrl(null);
-    setImageSource('PRESET');
-    setProgress(0);
-    setGameState(GameState.PLAYING);
-  };
-
-  const handleProgress = useCallback((percent: number) => {
-    setProgress(percent);
-    // If percent hits 100 (which CleaningCanvas now forces), complete immediately
-    if (percent >= 100 && gameState !== GameState.COMPLETED) {
-      setGameState(GameState.COMPLETED);
-    }
-  }, [gameState]);
-
+  // Simplified generation handler - No API calls, just local fetch
   const handleGeneration = async (
       genFunction: () => Promise<GenerationResult | null>, 
       successCallback: (result: GenerationResult) => void
   ) => {
-    setIsGenerating(true);
+    setIsLoading(true);
     setErrorMsg(null);
-    setIsQuotaError(false);
     try {
         const result = await genFunction();
         if (result) {
             successCallback(result);
         } else {
-            throw new Error("No result returned");
+            throw new Error("Unable to load image.");
         }
     } catch (e: any) {
-        console.error("Generation error:", e);
-        
-        // Friendly Error Messages
-        let friendlyMsg = "AI 連線失敗，請檢查網路。";
-        const rawMsg = e.message || "";
-
-        if (rawMsg.includes("API Key")) {
-            friendlyMsg = "找不到 API Key。\n請確認 .env 檔案已設定 API_KEY。";
-        } else if (rawMsg.includes("429") || rawMsg.includes("Quota") || rawMsg.includes("Too Many Requests")) {
-            friendlyMsg = "AI 畫師目前太忙碌 (免費額度用完)。\n建議您先玩「經典景點」模式！";
-            setIsQuotaError(true);
-        } else if (rawMsg.includes("Server endpoint")) {
-            friendlyMsg = "伺服器連線錯誤。\n若是本機執行，請確認 .env 有設定 API_KEY。";
-        } else if (rawMsg.includes("Candidate was blocked")) {
-            friendlyMsg = "AI 拒絕繪製此主題 (安全過濾)。\n請試試其他主題。";
-        }
-        
-        setErrorMsg(friendlyMsg);
+        console.error("Image Load Error:", e);
+        setErrorMsg("圖片載入失敗，請檢查網路連線。");
     } finally {
-        setIsGenerating(false);
+        setIsLoading(false);
     }
   };
 
-  const generateNewBackground = async (prompt: string) => {
+  // Modified: When clicking a preset, we now pick a RANDOM image from that category
+  const startLevel = async (bg: BackgroundInfo) => {
     await handleGeneration(
-        () => generateThemeBackground(prompt),
-        (result) => {
-            setCustomBgUrl(result.url);
-            setImageSource(result.source);
-            setProgress(0);
-            setGameState(GameState.PLAYING);
-        }
+      () => generateThemeBackground(bg.prompt),
+      (result) => {
+          setCurrentBg(bg);
+          setCustomBgUrl(result.url); // Use the randomly picked URL
+          setImageSource('PRESET');
+          setProgress(0);
+          setGameState(GameState.PLAYING);
+      }
     );
   };
 
@@ -95,9 +58,9 @@ const App: React.FC = () => {
             setCurrentBg({
                 id: 'random',
                 url: result.url,
-                label: '神秘世界',
-                emoji: '🎲',
-                prompt: 'Random generation'
+                label: '隨機大冒險',
+                emoji: '🎁',
+                prompt: 'Random'
             });
             setCustomBgUrl(result.url);
             setImageSource(result.source);
@@ -111,16 +74,17 @@ const App: React.FC = () => {
     if (currentBg.id === 'random') {
         handleRandomPlay();
     } else {
-        generateNewBackground(currentBg.prompt);
+        // Generate another random image for the SAME category
+        startLevel(currentBg);
     }
   };
 
-  const switchToPresetMode = () => {
-      setErrorMsg(null);
-      // Pick a random preset
-      const randomPreset = BACKGROUNDS[Math.floor(Math.random() * BACKGROUNDS.length)];
-      startLevel(randomPreset);
-  };
+  const handleProgress = useCallback((val: number) => {
+    setProgress(val);
+    if (val >= COMPLETION_THRESHOLD && gameState !== GameState.COMPLETED) {
+        setGameState(GameState.COMPLETED);
+    }
+  }, [gameState]);
 
   return (
     <div className="relative w-screen h-screen flex flex-col bg-[#f8fafc]">
@@ -128,34 +92,15 @@ const App: React.FC = () => {
       {errorMsg && (
         <div className="absolute inset-0 z-[100] bg-black/60 backdrop-blur-md flex items-center justify-center p-4">
             <div className="bg-white rounded-3xl p-8 max-w-md w-full shadow-2xl text-center border-4 border-red-100 animate-[bounceIn_0.5s_cubic-bezier(0.175,0.885,0.32,1.275)]">
-                <div className="text-6xl mb-4">😵‍💫</div>
-                <h3 className="text-2xl font-black text-slate-800 mb-2">哎呀！</h3>
-                <p className="text-slate-600 mb-8 font-bold whitespace-pre-line leading-relaxed bg-slate-50 p-4 rounded-xl">
-                    {errorMsg}
-                </p>
-                <div className="flex gap-4 justify-center">
-                    <button 
-                        onClick={() => setErrorMsg(null)}
-                        className="px-6 py-3 rounded-xl bg-slate-200 text-slate-600 font-bold hover:bg-slate-300 transition-colors"
-                    >
-                        關閉
-                    </button>
-                    {isQuotaError ? (
-                        <button 
-                            onClick={switchToPresetMode}
-                            className="px-6 py-3 rounded-xl bg-teal-500 text-white font-bold hover:bg-teal-600 transition-colors shadow-lg flex items-center gap-2"
-                        >
-                            <i className="fas fa-play"></i> 玩內建景點
-                        </button>
-                    ) : (
-                        <button 
-                            onClick={() => { setErrorMsg(null); handleRandomPlay(); }}
-                            className="px-6 py-3 rounded-xl bg-teal-500 text-white font-bold hover:bg-teal-600 transition-colors shadow-lg flex items-center gap-2"
-                        >
-                            <i className="fas fa-redo"></i> 再試一次
-                        </button>
-                    )}
-                </div>
+                <div className="text-6xl mb-4">⚠️</div>
+                <h3 className="text-2xl font-black text-slate-800 mb-2">網路問題</h3>
+                <p className="text-slate-600 mb-8 font-bold">{errorMsg}</p>
+                <button 
+                    onClick={() => setErrorMsg(null)}
+                    className="px-6 py-3 rounded-xl bg-slate-200 text-slate-600 font-bold hover:bg-slate-300 transition-colors"
+                >
+                    關閉
+                </button>
             </div>
         </div>
       )}
@@ -165,7 +110,7 @@ const App: React.FC = () => {
           <span className="text-3xl">✨</span>
           <div>
             <h1 className="text-3xl font-black text-teal-800 tracking-tight">神手去旅行</h1>
-            <p className="text-xs text-teal-600 font-bold tracking-widest uppercase">ZenClean AI 復健</p>
+            <p className="text-xs text-teal-600 font-bold tracking-widest uppercase">ZenClean 智能復健</p>
           </div>
         </div>
 
@@ -209,17 +154,17 @@ const App: React.FC = () => {
                   請用你的「神之手」，把窗戶擦乾淨吧！
                 </p>
                 
-                {/* Random Generation Button */}
+                {/* Global Random Button */}
                 <button 
                     onClick={handleRandomPlay}
-                    disabled={isGenerating}
+                    disabled={isLoading}
                     className="group relative inline-flex items-center gap-4 bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white px-12 py-6 rounded-full shadow-2xl hover:scale-105 transition-all disabled:opacity-50 disabled:scale-100 active:scale-95"
                 >
-                    {isGenerating ? (
+                    {isLoading ? (
                         <>
                             <i className="fas fa-spinner animate-spin text-4xl"></i>
                             <div className="text-left">
-                                <div className="text-2xl font-black">AI 正在繪製中...</div>
+                                <div className="text-2xl font-black">挑選中...</div>
                                 <div className="text-sm font-medium opacity-90">請稍候</div>
                             </div>
                         </>
@@ -227,8 +172,8 @@ const App: React.FC = () => {
                         <>
                             <span className="text-5xl animate-bounce">🌍</span>
                             <div className="text-left">
-                                <div className="text-3xl font-black">隨機去旅行</div>
-                                <div className="text-base font-medium opacity-90">AI 帶你去未知的地方！</div>
+                                <div className="text-3xl font-black">隨機大冒險</div>
+                                <div className="text-base font-medium opacity-90">從 120+ 張美圖中抽一張！</div>
                             </div>
                         </>
                     )}
@@ -239,15 +184,18 @@ const App: React.FC = () => {
                 {BACKGROUNDS.map((bg) => (
                   <button
                     key={bg.id}
+                    disabled={isLoading}
                     onClick={() => startLevel(bg)}
                     className="group flex flex-col items-center gap-6"
                   >
                     <div className="relative w-full aspect-square rounded-[3rem] overflow-hidden shadow-2xl transition-all duration-300 group-hover:scale-105 group-active:scale-95 bg-white flex items-center justify-center border-8 border-transparent group-hover:border-teal-400 group-hover:shadow-teal-200/50">
-                      {/* Removed grayscale classes to make icons colorful */}
-                      <span className="text-8xl transform group-hover:scale-125 transition-transform duration-500">
-                        {bg.emoji}
-                      </span>
-                      {/* Mysterious Overlay */}
+                      {isLoading && currentBg.id === bg.id ? (
+                        <i className="fas fa-spinner animate-spin text-4xl text-teal-500"></i>
+                      ) : (
+                        <span className="text-8xl transform group-hover:scale-125 transition-transform duration-500">
+                            {bg.emoji}
+                        </span>
+                      )}
                       <div className="absolute inset-0 bg-teal-900/10 group-hover:bg-transparent transition-colors"></div>
                     </div>
                     <span className="text-2xl font-black text-slate-700 tracking-tight group-hover:text-teal-700 transition-colors">{bg.label}</span>
@@ -260,14 +208,13 @@ const App: React.FC = () => {
           <>
             {/* Source Badge */}
             <div className="absolute top-28 left-8 z-30 bg-black/40 backdrop-blur-md text-white px-5 py-2 rounded-full font-bold text-sm border border-white/20 shadow-lg flex items-center gap-2 animate-fade-in">
-                {imageSource === 'AI' && <><i className="fas fa-magic text-yellow-300"></i> AI 即時生成</>}
-                {imageSource === 'FALLBACK' && <><i className="fas fa-images text-blue-300"></i> 精選圖庫 (備援)</>}
-                {imageSource === 'PRESET' && <><i className="fas fa-star text-orange-300"></i> 經典景點</>}
+                {currentBg.id === 'random' ? 
+                  <><i className="fas fa-dice text-yellow-300"></i> 隨機大冒險</> : 
+                  <><i className="fas fa-images text-orange-300"></i> {currentBg.label}系列</>}
             </div>
 
             <CleaningCanvas
-                // FIX: Add Key to force remount on image change, ensuring fog layer resets correctly
-                key={customBgUrl || currentBg.url}
+                key={customBgUrl || currentBg.url} // Force remount on URL change
                 backgroundImage={customBgUrl || currentBg.url}
                 brushSize={DEFAULT_BRUSH_SIZE}
                 wipesRequired={wipesRequired}
@@ -282,7 +229,7 @@ const App: React.FC = () => {
         <footer className="absolute bottom-10 left-1/2 -translate-x-1/2 z-[60] flex gap-8">
           <button 
             onClick={() => setGameState(GameState.START)}
-            disabled={isGenerating}
+            disabled={isLoading}
             className="bg-white/95 backdrop-blur-md px-12 py-5 rounded-full shadow-2xl hover:bg-white text-slate-800 font-black text-2xl transition-all border-b-4 border-slate-300 active:border-0 active:translate-y-1 flex items-center gap-4 disabled:opacity-50"
           >
             <i className="fas fa-home text-teal-500"></i> 回首頁
@@ -291,16 +238,16 @@ const App: React.FC = () => {
           {gameState === GameState.COMPLETED && (
             <button 
               onClick={handleNextLevel}
-              disabled={isGenerating}
+              disabled={isLoading}
               className="bg-teal-600 px-14 py-5 rounded-full shadow-2xl hover:bg-teal-700 text-white font-black text-2xl transition-all animate-pulse flex items-center gap-4 disabled:opacity-70 disabled:animate-none"
             >
-              {isGenerating ? (
+              {isLoading ? (
                   <>
-                    <i className="fas fa-spinner animate-spin"></i> 規劃行程中...
+                    <i className="fas fa-spinner animate-spin"></i> 挑選中...
                   </>
               ) : (
                   <>
-                    {currentBg.id === 'random' ? '去下一個地方' : `再看一張「${currentBg.label}」`} 
+                    {currentBg.id === 'random' ? '再去一個地方' : `再看一張「${currentBg.label}」`} 
                     <i className={`fas ${currentBg.id === 'random' ? 'fa-plane' : 'fa-camera'}`}></i>
                   </>
               )}
@@ -314,13 +261,6 @@ const App: React.FC = () => {
           <h3 className="text-2xl font-black text-slate-800 mb-8 flex items-center gap-3">
             <i className="fas fa-sliders-h text-teal-600"></i> 復健設定
           </h3>
-
-          <div className="mb-6 p-4 bg-slate-100 rounded-xl flex items-center justify-between">
-             <span className="text-sm font-bold text-slate-600">API Key 狀態:</span>
-             <span className={`px-3 py-1 rounded-full text-xs font-black ${hasApiKey ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                {hasApiKey ? '已連線 OK' : '未偵測 Missing'}
-             </span>
-          </div>
           
           <div className="space-y-10">
              <div className="space-y-4">
@@ -341,30 +281,10 @@ const App: React.FC = () => {
                 </p>
              </div>
 
-             <div className="pt-6 border-t border-slate-100">
-              <label className="block text-sm font-black text-slate-500 mb-4 uppercase tracking-widest">AI 即時生成測試</label>
-              <div className="grid grid-cols-1 gap-3">
-                {BACKGROUNDS.slice(0, 4).map(bg => (
-                  <button
-                    key={bg.id}
-                    disabled={isGenerating}
-                    onClick={() => generateNewBackground(bg.prompt)}
-                    className="group text-left p-4 rounded-2xl bg-slate-50 hover:bg-teal-50 text-slate-700 font-bold border border-slate-200 flex justify-between items-center transition-all"
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className="text-2xl">{bg.emoji}</span>
-                      <span>新生成「{bg.label}」</span>
-                    </div>
-                    {isGenerating ? <i className="fas fa-spinner animate-spin text-teal-500"></i> : <i className="fas fa-wand-sparkles text-teal-300 group-hover:text-teal-500 transition-colors"></i>}
-                  </button>
-                ))}
-              </div>
-            </div>
-
             <button 
               onClick={() => {
                 setIsTherapistMode(false);
-                startLevel(currentBg);
+                setGameState(GameState.START); // Reset to start
               }}
               className="w-full bg-slate-900 text-white py-4 rounded-2xl font-black text-lg hover:bg-black transition-all shadow-xl"
             >

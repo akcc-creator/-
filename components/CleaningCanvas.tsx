@@ -15,21 +15,28 @@ declare const Camera: any;
 // === CONFIGURATION ===
 const TRACKING_SMOOTHING = 0.5; 
 const MOVEMENT_SENSITIVITY = 1.8; 
-const FOG_OPACITY = 0.98;
-const LOST_TRACKING_GRACE_PERIOD = 1000; // 1 second tolerance before showing "Lost Hand" UI
+const FOG_OPACITY = 0.95; 
+const LOST_TRACKING_GRACE_PERIOD = 2000;
 
 const lerp = (start: number, end: number, factor: number) => start + (end - start) * factor;
 
-// Particle System for Foam/Bubbles & Grime
+// Particle System
 interface Particle {
   x: number;
   y: number;
   vx: number;
   vy: number;
   life: number;
+  maxLife: number;
   size: number;
-  type: 'foam' | 'sparkle' | 'grime';
-  color?: string;
+  type: 'foam' | 'water' | 'sparkle';
+}
+
+interface TrailPoint {
+  x: number;
+  y: number;
+  age: number;
+  size: number;
 }
 
 const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
@@ -40,28 +47,47 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
   isComplete
 }) => {
   // Canvases
-  const stainCanvasRef = useRef<HTMLCanvasElement>(null); // The fog layer
-  const cursorCanvasRef = useRef<HTMLCanvasElement>(null); // The cursor & particle layer
+  const stainCanvasRef = useRef<HTMLCanvasElement>(null); 
+  const cursorCanvasRef = useRef<HTMLCanvasElement>(null); 
   const stainContextRef = useRef<CanvasRenderingContext2D | null>(null);
   
   // State for UI
-  const [isTrackingActive, setIsTrackingActive] = useState(false); // Debounced tracking state
+  const [isCameraReady, setIsCameraReady] = useState(false);
+  const [isTrackingActive, setIsTrackingActive] = useState(false);
   const [inputType, setInputType] = useState<'camera' | 'mouse'>('camera');
+  const [showGuide, setShowGuide] = useState(false);
+  const [isImageLoaded, setIsImageLoaded] = useState(false); // Image loading state
   
-  // Refs for tracking loop logic (avoiding re-renders)
+  // Refs for tracking
   const lastHandDetectionTime = useRef<number>(0);
   const isHandRawDetected = useRef<boolean>(false);
-
   const targetPosRef = useRef({ x: 0, y: 0 }); 
   const currentPosRef = useRef({ x: 0, y: 0 });
   const lastDrawPosRef = useRef<{x: number, y: number} | null>(null);
   const requestRef = useRef<number>(0);
   
-  // Particles Ref
+  // Visual Effects Refs
   const particlesRef = useRef<Particle[]>([]);
+  const trailRef = useRef<TrailPoint[]>([]); 
   
-  // Performance throttling for progress check
   const lastProgressCheckTime = useRef<number>(0);
+
+  // --- 0. PRELOAD IMAGE ---
+  // Fix for blank screen issue: Wait for image to load before initializing canvas layers
+  useEffect(() => {
+    setIsImageLoaded(false);
+    const img = new Image();
+    img.src = backgroundImage;
+    img.onload = () => {
+      setIsImageLoaded(true);
+    };
+    img.onerror = () => {
+      console.error("Failed to load background image:", backgroundImage);
+      // Even if failed, we set loaded to true to show *something* (white bg) rather than infinite spinner,
+      // though ideally App.tsx handles fetch errors.
+      setIsImageLoaded(true);
+    };
+  }, [backgroundImage]);
 
   // --- 1. MEDIA PIPE SETUP ---
   useEffect(() => {
@@ -75,6 +101,7 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
       try {
         if (typeof Hands === 'undefined' || typeof Camera === 'undefined') {
             console.warn("MediaPipe scripts not loaded yet. Mouse fallback active.");
+            setIsCameraReady(true);
             return;
         }
 
@@ -90,14 +117,15 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
         });
 
         hands.onResults((results: any) => {
-          // Logic: Even if we lose the hand for a few frames, we keep the UI active
-          // until the GRACE_PERIOD expires.
-          
+          if (!isCameraReady) setIsCameraReady(true);
+
           if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
             isHandRawDetected.current = true;
             lastHandDetectionTime.current = Date.now();
-            setIsTrackingActive(true); // Immediate activation
+            
+            setIsTrackingActive(true); 
             setInputType('camera');
+            setShowGuide(false);
             
             const palm = results.multiHandLandmarks[0][9];
             const canvas = stainCanvasRef.current;
@@ -117,14 +145,13 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
             }
           } else {
             isHandRawDetected.current = false;
-            // Do NOT set isTrackingActive(false) here. 
-            // We let the checkInterval handle the timeout.
           }
         });
 
         camera = new Camera(videoElement, {
           onFrame: async () => {
             if (hands) await hands.send({ image: videoElement });
+            setIsCameraReady(true);
           },
           width: 640,
           height: 480
@@ -133,20 +160,22 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
         await camera.start();
       } catch (err) {
         console.error("Camera error:", err);
+        setIsCameraReady(true);
       }
     };
 
     startTracking();
 
-    // Loop to check for tracking timeout (Grace Period)
     const checkInterval = setInterval(() => {
-        if (isHandRawDetected.current) return; // Hand is currently there, no need to check timeout
-
+        if (isHandRawDetected.current) return; 
         const timeSinceLastHand = Date.now() - lastHandDetectionTime.current;
         if (timeSinceLastHand > LOST_TRACKING_GRACE_PERIOD) {
             setIsTrackingActive(false);
+            if (inputType === 'camera') {
+                setShowGuide(true);
+            }
         }
-    }, 200);
+    }, 500);
 
     return () => {
       if (camera) camera.stop();
@@ -156,9 +185,11 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
 
   // --- 2. MOUSE FALLBACK ---
   const handlePointerMove = (e: React.PointerEvent) => {
-    // Only track pointer if game is NOT complete
-    if (!isTrackingActive && !isComplete) {
-      setInputType('mouse');
+    if (!isComplete) {
+      if (inputType !== 'mouse') {
+          setInputType('mouse');
+          setShowGuide(false);
+      }
       const canvas = stainCanvasRef.current;
       if (!canvas) return;
       const rect = canvas.getBoundingClientRect();
@@ -169,50 +200,66 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
     }
   };
 
-  // --- 3. ENHANCED PARTICLE SYSTEM (FOAM, SPARKLES & GRIME) ---
-  const spawnParticles = (x: number, y: number) => {
-    // 1. Foam (Bubbles)
-    for (let i = 0; i < 2; i++) {
+  // --- 3. PARTICLES & WATER STREAKS ---
+  const spawnParticles = (x: number, y: number, amount: number = 1) => {
+    if (Math.random() > 0.4) {
       particlesRef.current.push({
-        x: x + (Math.random() - 0.5) * brushSize * 0.6,
-        y: y + (Math.random() - 0.5) * brushSize * 0.6,
-        vx: (Math.random() - 0.5) * 0.5,
-        vy: (Math.random() - 0.5) * 0.5,
+        x: x + (Math.random() - 0.5) * brushSize * 0.8,
+        y: y + (Math.random() - 0.5) * brushSize * 0.8,
+        vx: 0,
+        vy: Math.random() * 3 + 2, 
         life: 1.0,
-        size: Math.random() * 8 + 4,
-        type: 'foam'
+        maxLife: 1.0,
+        size: Math.random() * 3 + 2,
+        type: 'water'
       });
     }
 
-    // 2. Sparkles (Water droplets)
-    if (Math.random() > 0.5) {
+    for (let i = 0; i < amount; i++) {
         particlesRef.current.push({
-          x: x,
-          y: y,
-          vx: (Math.random() - 0.5) * 5,
-          vy: (Math.random() - 0.5) * 5,
+          x: x + (Math.random() - 0.5) * brushSize,
+          y: y + (Math.random() - 0.5) * brushSize,
+          vx: (Math.random() - 0.5) * 0.5,
+          vy: (Math.random() - 0.5) * 0.5 - 0.2,
           life: 1.0,
-          size: Math.random() * 3 + 1,
-          type: 'sparkle'
+          maxLife: 1.0,
+          size: Math.random() * 10 + 2,
+          type: 'foam'
         });
     }
 
-    // 3. Grime (Falling Dust/Dirt) - VISUAL ENHANCEMENT
-    for (let i = 0; i < 3; i++) {
+    if (Math.random() > 0.9) {
         particlesRef.current.push({
-            x: x + (Math.random() - 0.5) * brushSize,
-            y: y + (Math.random() - 0.5) * brushSize,
-            vx: (Math.random() - 0.5) * 2, // Slight horizontal scatter
-            vy: Math.random() * 3 + 2,     // Gravity: Falls down
-            life: 1.0,
-            size: Math.random() * 4 + 2,
-            type: 'grime',
-            color: Math.random() > 0.5 ? '#8B4513' : '#654321' 
+          x: x + (Math.random() - 0.5) * brushSize * 0.5,
+          y: y + (Math.random() - 0.5) * brushSize * 0.5,
+          vx: 0,
+          vy: 0,
+          life: 0.8,
+          maxLife: 0.8,
+          size: Math.random() * 6 + 3,
+          type: 'sparkle'
         });
     }
   };
 
   const updateAndDrawParticles = (ctx: CanvasRenderingContext2D) => {
+    for (let i = trailRef.current.length - 1; i >= 0; i--) {
+        const t = trailRef.current[i];
+        t.age -= 0.03; 
+        if (t.age <= 0) {
+            trailRef.current.splice(i, 1);
+        } else {
+            ctx.beginPath();
+            const grad = ctx.createRadialGradient(t.x, t.y, 0, t.x, t.y, t.size);
+            grad.addColorStop(0, `rgba(255, 255, 255, ${t.age * 0.15})`);
+            grad.addColorStop(0.5, `rgba(200, 230, 255, ${t.age * 0.05})`);
+            grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+            ctx.fillStyle = grad;
+            ctx.arc(t.x, t.y, t.size, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+
     for (let i = particlesRef.current.length - 1; i >= 0; i--) {
       const p = particlesRef.current[i];
       p.x += p.vx;
@@ -221,28 +268,31 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
       if (p.type === 'foam') {
         p.life -= 0.02; 
         p.size *= 0.98;
+      } else if (p.type === 'water') {
+        p.life -= 0.015;
+        p.vy *= 1.05; 
       } else if (p.type === 'sparkle') {
-        p.life -= 0.05; 
-      } else if (p.type === 'grime') {
-        p.life -= 0.015; 
-        p.vy += 0.1;     
+        p.life -= 0.05;
       }
 
       if (p.life <= 0 || p.y > ctx.canvas.height) {
         particlesRef.current.splice(i, 1);
       } else {
         ctx.beginPath();
+        const opacity = p.life / p.maxLife;
+        
         if (p.type === 'foam') {
-            ctx.fillStyle = `rgba(255, 255, 255, ${p.life * 0.6})`;
+            ctx.fillStyle = `rgba(240, 250, 255, ${opacity * 0.4})`;
             ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+            ctx.fill();
+        } else if (p.type === 'water') {
+            ctx.fillStyle = `rgba(200, 230, 255, ${opacity * 0.6})`;
+            ctx.ellipse(p.x, p.y, p.size * 0.6, p.size, 0, 0, Math.PI * 2);
             ctx.fill();
         } else if (p.type === 'sparkle') {
-            ctx.fillStyle = `rgba(200, 250, 255, ${p.life})`;
-            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
-            ctx.fill();
-        } else if (p.type === 'grime') {
-            ctx.fillStyle = `rgba(100, 100, 100, ${p.life * 0.8})`; 
-            ctx.fillRect(p.x, p.y, p.size, p.size);
+            ctx.fillStyle = `rgba(255, 255, 255, ${opacity})`;
+            ctx.font = `${p.size * 2}px Arial`;
+            ctx.fillText('✨', p.x, p.y);
         }
       }
     }
@@ -256,7 +306,6 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
     const target = targetPosRef.current;
     const current = currentPosRef.current;
     
-    // Smooth interpolation even when tracking is lost briefly (targetPosRef stays at last known pos)
     current.x = lerp(current.x, target.x, TRACKING_SMOOTHING);
     current.y = lerp(current.y, target.y, TRACKING_SMOOTHING);
 
@@ -264,19 +313,16 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
     if (ctx) {
       ctx.clearRect(0, 0, cursorCanvas.width, cursorCanvas.height);
       
-      // Update Particles
-      if (!isComplete) {
+      if (!isComplete && isImageLoaded) {
         updateAndDrawParticles(ctx);
       }
 
-      // Draw custom cursor ONLY if game is running (not complete)
-      // Use isTrackingActive instead of raw detection for smoother experience
-      if ((isTrackingActive || inputType === 'mouse') && !isComplete) {
+      const isInteracting = (isTrackingActive || inputType === 'mouse') && !isComplete && isCameraReady && isImageLoaded;
+
+      if (isInteracting) {
         const x = current.x;
         const y = current.y;
 
-        // Visual Enhancement: HAND CURSOR
-        // 1. Cleaning Area Glow
         const grad = ctx.createRadialGradient(x, y, 0, x, y, brushSize / 1.5);
         grad.addColorStop(0, 'rgba(255, 255, 255, 0.4)');
         grad.addColorStop(1, 'rgba(255, 255, 255, 0)');
@@ -285,33 +331,45 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
         ctx.arc(x, y, brushSize / 1.5, 0, Math.PI * 2);
         ctx.fill();
 
-        // 2. Hand Emoji
-        const handSize = brushSize * 0.5; 
-        ctx.font = `${handSize}px Arial`;
+        ctx.shadowColor = 'rgba(0,0,0,0.5)';
+        ctx.shadowBlur = 15;
+        ctx.font = `${brushSize * 0.6}px Arial`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.shadowColor = 'rgba(0,0,0,0.3)';
-        ctx.shadowBlur = 10;
         ctx.fillText('🖐️', x, y);
         ctx.shadowBlur = 0;
+
+        handleWipe(current.x, current.y);
+        
+        if (Math.random() > 0.5) {
+            trailRef.current.push({
+                x: x,
+                y: y,
+                age: 1.0,
+                size: brushSize / 2
+            });
+        }
+
+        const dist = lastDrawPosRef.current ? Math.hypot(x - lastDrawPosRef.current.x, y - lastDrawPosRef.current.y) : 10;
+        if (dist > 5) {
+            spawnParticles(current.x, current.y, Math.min(3, dist / 10));
+        }
       }
     }
 
-    if ((isTrackingActive || inputType === 'mouse') && !isComplete) {
-      handleWipe(current.x, current.y);
-      spawnParticles(current.x, current.y);
-    }
-
     requestRef.current = requestAnimationFrame(animate);
-  }, [isTrackingActive, inputType, isComplete, brushSize]);
+  }, [isTrackingActive, inputType, isComplete, brushSize, isCameraReady, isImageLoaded]);
 
   useEffect(() => {
     requestRef.current = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(requestRef.current);
   }, [animate]);
 
-  // --- 5. STAIN LAYER ---
+  // --- 5. STAIN LAYER (NOISE & FOG) ---
   useEffect(() => {
+    // Only initialize stain layer AFTER image is loaded to prevent issues
+    if (!isImageLoaded) return;
+
     const canvas = stainCanvasRef.current;
     const cCanvas = cursorCanvasRef.current;
     if (!canvas || !cCanvas) return;
@@ -322,20 +380,28 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
       stainContextRef.current = ctx;
       ctx.globalCompositeOperation = 'source-over';
       
-      // Base Fog - slightly darker to make cleaning more satisfying
-      ctx.fillStyle = `rgba(230, 235, 240, ${FOG_OPACITY})`; 
+      ctx.fillStyle = `rgba(235, 240, 245, ${FOG_OPACITY})`; 
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // Texture - Grime spots
-      for(let i = 0; i < 600; i++) {
+      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const data = imageData.data;
+      for (let i = 0; i < data.length; i += 4) {
+          const noise = (Math.random() - 0.5) * 30;
+          data[i] = Math.min(255, Math.max(0, data[i] + noise));
+          data[i+1] = Math.min(255, Math.max(0, data[i+1] + noise));
+          data[i+2] = Math.min(255, Math.max(0, data[i+2] + noise));
+          if (Math.random() > 0.98) {
+             data[i+3] = Math.min(255, data[i+3] - 50); 
+          }
+      }
+      ctx.putImageData(imageData, 0, 0);
+
+      for(let i = 0; i < 400; i++) {
         const x = Math.random() * canvas.width;
         const y = Math.random() * canvas.height;
-        const r = Math.random() * 80 + 10;
+        const r = Math.random() * 3 + 1;
         ctx.beginPath();
-        const grad = ctx.createRadialGradient(x, y, 0, x, y, r);
-        grad.addColorStop(0, 'rgba(180, 190, 200, 0.3)'); // Darker spots
-        grad.addColorStop(1, 'rgba(180, 190, 200, 0)');
-        ctx.fillStyle = grad;
+        ctx.fillStyle = 'rgba(255,255,255,0.4)';
         ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.fill();
       }
@@ -344,43 +410,39 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
     const parent = canvas.parentElement;
     if (!parent) return;
 
-    const observer = new ResizeObserver(() => {
-        const width = parent.clientWidth;
-        const height = parent.clientHeight;
-        if (width > 0 && height > 0) {
-            if (canvas.width !== width || canvas.height !== height) {
-                canvas.width = width;
-                canvas.height = height;
-                cCanvas.width = width;
-                cCanvas.height = height;
-                initStainLayer();
-            }
-        }
-    });
+    const setSize = () => {
+        canvas.width = parent.clientWidth;
+        canvas.height = parent.clientHeight;
+        cCanvas.width = parent.clientWidth;
+        cCanvas.height = parent.clientHeight;
+        initStainLayer();
+    };
+
+    setSize();
+    const observer = new ResizeObserver(setSize);
     observer.observe(parent);
 
     return () => observer.disconnect();
-  }, [backgroundImage]);
+  }, [backgroundImage, isImageLoaded]); // Dependency added: isImageLoaded
 
   const calculateProgress = useCallback(() => {
     const ctx = stainContextRef.current;
     const canvas = stainCanvasRef.current;
     if (!ctx || !canvas) return;
 
-    const stride = 20; 
+    const stride = 25; 
     const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const pixels = imageData.data;
     let totalTransparent = 0;
 
     for (let i = 3; i < pixels.length; i += 4 * stride) {
-      if (pixels[i] < 10) totalTransparent++;
+      if (pixels[i] < 40) totalTransparent++;
     }
 
     const totalPixels = (canvas.width * canvas.height) / stride;
     const percent = (totalTransparent / totalPixels) * 100;
 
-    // Instant Completion Trigger: If we are extremely close to 100%, force it.
-    if (percent >= 99) {
+    if (percent >= 98) {
         onProgress(100);
     } else {
         onProgress(percent);
@@ -392,32 +454,44 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
     if (!ctx) return;
 
     ctx.globalCompositeOperation = 'destination-out';
-    
-    // Hardness calculation
     const hardness = 1 / Math.max(1, wipesRequired); 
+    const rad = brushSize / 2;
+    const gradient = ctx.createRadialGradient(x, y, rad * 0.3, x, y, rad);
+    gradient.addColorStop(0, `rgba(0, 0, 0, ${hardness})`);
+    gradient.addColorStop(0.6, `rgba(0, 0, 0, ${hardness * 0.5})`);
+    gradient.addColorStop(1, `rgba(0, 0, 0, 0)`);
     
-    ctx.strokeStyle = `rgba(0, 0, 0, ${hardness})`; 
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-    ctx.lineWidth = brushSize;
-    ctx.shadowBlur = brushSize / 4; // Reduced blur for crisper "wipe" edges
-    ctx.shadowColor = 'rgba(0,0,0,0.5)';
-
+    ctx.fillStyle = gradient;
     ctx.beginPath();
+    ctx.arc(x, y, rad, 0, Math.PI * 2);
+    ctx.fill();
+    
     if (lastDrawPosRef.current) {
-      ctx.moveTo(lastDrawPosRef.current.x, lastDrawPosRef.current.y);
-      ctx.lineTo(x, y);
-    } else {
-      ctx.moveTo(x, y);
-      ctx.lineTo(x + 0.1, y);
+        const dist = Math.hypot(x - lastDrawPosRef.current.x, y - lastDrawPosRef.current.y);
+        const steps = Math.ceil(dist / (rad * 0.2));
+        
+        if (steps > 0) {
+            for (let i = 1; i <= steps; i++) {
+                 const t = i / steps;
+                 const ix = lastDrawPosRef.current.x + (x - lastDrawPosRef.current.x) * t;
+                 const iy = lastDrawPosRef.current.y + (y - lastDrawPosRef.current.y) * t;
+                 
+                 const g2 = ctx.createRadialGradient(ix, iy, rad * 0.3, ix, iy, rad);
+                 g2.addColorStop(0, `rgba(0, 0, 0, ${hardness})`);
+                 g2.addColorStop(0.6, `rgba(0, 0, 0, ${hardness * 0.5})`);
+                 g2.addColorStop(1, `rgba(0, 0, 0, 0)`);
+                 ctx.fillStyle = g2;
+                 ctx.beginPath();
+                 ctx.arc(ix, iy, rad, 0, Math.PI * 2);
+                 ctx.fill();
+            }
+        }
     }
-    ctx.stroke();
     
     lastDrawPosRef.current = { x, y };
     
     const now = Date.now();
-    // Increase check frequency slightly to catch 100% faster
-    if (now - lastProgressCheckTime.current > 100) {
+    if (now - lastProgressCheckTime.current > 150) {
         calculateProgress();
         lastProgressCheckTime.current = now;
     }
@@ -425,7 +499,6 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
 
   return (
     <div 
-      // FIX: Only hide cursor when game is active. Show default cursor when complete for UI interaction.
       className={`relative w-full h-full overflow-hidden select-none bg-cover bg-center ${!isComplete ? 'cursor-none' : ''}`}
       style={{ backgroundImage: `url(${backgroundImage})` }}
       onPointerMove={handlePointerMove}
@@ -433,7 +506,7 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
       <canvas ref={stainCanvasRef} className="absolute top-0 left-0 w-full h-full z-10" />
       <canvas ref={cursorCanvasRef} className="absolute top-0 left-0 w-full h-full z-20 pointer-events-none" />
 
-      {/* Completion Flash Effect */}
+      {/* Completion Flash */}
       {isComplete && (
         <div className="absolute inset-0 z-40 pointer-events-none animate-[flash_1s_ease-out_forwards] border-[20px] border-white/80 shadow-[inset_0_0_100px_rgba(255,255,255,0.8)]">
             <style>{`
@@ -446,21 +519,54 @@ const CleaningCanvas: React.FC<CleaningCanvasProps> = ({
         </div>
       )}
 
-      {/* Show Tracking UI only if we really lost the hand for > 1 sec AND not using mouse */}
-      {!isTrackingActive && inputType === 'camera' && !isComplete && (
-        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30 transition-opacity duration-500">
-          <div className="bg-slate-900/40 backdrop-blur-sm p-6 rounded-2xl text-white flex flex-col items-center animate-pulse border border-white/20">
-            <i className="fas fa-hand-paper text-5xl mb-3 text-teal-300"></i>
-            <p className="text-xl font-bold">偵測中...</p>
-            <p className="text-sm opacity-90 mt-1">請在鏡頭前揮手 (或使用滑鼠)</p>
+      {/* --- IMAGE LOADING SPINNER --- */}
+      {!isImageLoaded && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-white z-[60]">
+             <div className="w-16 h-16 border-8 border-slate-200 border-t-teal-500 rounded-full animate-spin mb-4"></div>
+             <p className="text-xl font-bold text-slate-500 animate-pulse">風景下載中...</p>
           </div>
+      )}
+
+      {/* Camera Loading */}
+      {isImageLoaded && !isCameraReady && !isComplete && (
+         <div className="absolute inset-0 flex items-center justify-center bg-slate-900/60 z-50 backdrop-blur-sm">
+            <div className="bg-white p-8 rounded-3xl flex flex-col items-center gap-4 shadow-2xl animate-bounce-small">
+                 <div className="w-12 h-12 border-4 border-teal-500 border-t-transparent rounded-full animate-spin"></div>
+                 <p className="text-xl font-black text-slate-700">攝影機啟動中...</p>
+                 <p className="text-sm text-slate-500">請稍候片刻</p>
+            </div>
+         </div>
+      )}
+
+      {/* Ghost Hand Guide */}
+      {isImageLoaded && isCameraReady && !isTrackingActive && inputType === 'camera' && !isComplete && showGuide && (
+        <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-30 animate-fade-in">
+          <div className="flex flex-col items-center">
+             <div className="relative w-32 h-32 mb-6 opacity-80 animate-[wave_2s_infinite_ease-in-out]">
+                <svg viewBox="0 0 24 24" fill="white" className="w-full h-full drop-shadow-[0_0_15px_rgba(0,0,0,0.5)]">
+                    <path d="M21,11C21,16.55 17.16,21.74 12,22C6.84,21.74 3,16.55 3,11V5C3,4.45 3.45,4 4,4H5C5.55,4 6,4.45 6,5V11H7V3C7,2.45 7.45,2 8,2H9C9.55,2 10,2.45 10,3V11H11V3C11,2.45 11.45,2 12,2H13C13.55,2 14,2.45 14,3V11H15V4C15,3.45 15.45,3 16,3H17C17.55,3 18,3.45 18,4V11H19V5C19,4.45 19.45,4 20,4H21C21.55,4 22,4.45 22,5V11H21Z" />
+                </svg>
+                <div className="absolute inset-0 border-2 border-teal-300 rounded-xl animate-[ping_2s_infinite] opacity-50"></div>
+             </div>
+             
+             <div className="bg-slate-900/60 backdrop-blur-md px-8 py-4 rounded-full text-white flex flex-col items-center border border-white/20">
+                <p className="text-2xl font-bold mb-1">請揮揮手 👋</p>
+                <p className="text-sm opacity-90">將手掌放入鏡頭範圍內</p>
+             </div>
+          </div>
+          <style>{`
+             @keyframes wave {
+                0%, 100% { transform: translateX(-10px) rotate(-10deg); }
+                50% { transform: translateX(10px) rotate(10deg); }
+             }
+          `}</style>
         </div>
       )}
 
       {isComplete && (
         <div className="absolute inset-0 flex items-center justify-center bg-white/20 backdrop-blur-md transition-opacity duration-1000 z-50">
-          <div className="bg-white/90 p-12 rounded-[3rem] shadow-2xl flex flex-col items-center border-4 border-teal-500 transform scale-110">
-             <div className="text-8xl mb-4">✨</div>
+          <div className="bg-white/95 p-12 rounded-[3rem] shadow-2xl flex flex-col items-center border-4 border-teal-500 transform scale-110 animate-pop-in">
+             <div className="text-8xl mb-4 animate-bounce">✨</div>
              <h2 className="text-4xl font-black text-teal-900 tracking-tight mb-2">窗戶擦乾淨了！</h2>
              <p className="text-xl text-teal-700 font-medium">風景真美</p>
           </div>
